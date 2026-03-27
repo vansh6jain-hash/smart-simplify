@@ -6,6 +6,8 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
   if (level <= 6) return "a beginner, some basic terminology is okay";
@@ -26,6 +28,44 @@ function extractJson(raw: string): unknown {
   }
 }
 
+async function callAiWithRetry(prompt: string, lovableApiKey: string) {
+  const maxRetries = 4;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${lovableApiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite",
+        messages: [
+          { role: "system", content: "You are a quiz question generator. Return ONLY valid raw JSON, no markdown, no code fences." },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
+
+    if (response.ok) {
+      return response;
+    }
+
+    const errText = await response.text();
+    console.error(`AI gateway error attempt ${attempt + 1}:`, response.status, errText);
+
+    if (response.status === 429 && attempt < maxRetries) {
+      const delay = Math.min(12000, 1200 * 2 ** attempt) + Math.floor(Math.random() * 500);
+      await sleep(delay);
+      continue;
+    }
+
+    return new Response(errText, { status: response.status });
+  }
+
+  return new Response(JSON.stringify({ error: "Max retries reached" }), { status: 429 });
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -43,7 +83,6 @@ serve(async (req) => {
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
-      console.error("LOVABLE_API_KEY is not set");
       return new Response(JSON.stringify({ error: "AI API key not configured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -52,36 +91,18 @@ serve(async (req) => {
 
     const levelDescription = getLevelDescription(level);
     const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
-
     const prompt = `Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Previous questions already asked: ${historyText}. Return ONLY raw JSON with no markdown, no code fences, no extra text: { "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why correct." }`;
 
-    console.log("Calling Lovable AI for question generation...");
-
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "google/gemini-2.5-flash",
-        messages: [
-          { role: "system", content: "You are a quiz question generator. Return ONLY valid raw JSON, no markdown, no code fences." },
-          { role: "user", content: prompt },
-        ],
-      }),
-    });
+    const response = await callAiWithRetry(prompt, LOVABLE_API_KEY);
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error("AI gateway error:", response.status, errText);
-
       if (response.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limited, please try again shortly." }), {
+        return new Response(JSON.stringify({ error: "We hit a temporary AI rate limit. Please wait a few seconds and retry." }), {
           status: 429,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
+
       if (response.status === 402) {
         return new Response(JSON.stringify({ error: "AI credits exhausted. Please add funds." }), {
           status: 402,
@@ -97,8 +118,6 @@ serve(async (req) => {
 
     const data = await response.json();
     const rawText = data.choices?.[0]?.message?.content ?? "";
-    console.log("Raw AI response:", rawText.substring(0, 200));
-
     const question = extractJson(rawText);
 
     return new Response(JSON.stringify(question), {
