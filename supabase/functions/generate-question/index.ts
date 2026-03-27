@@ -7,6 +7,7 @@ const corsHeaders = {
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
@@ -28,41 +29,31 @@ function extractJson(raw: string): unknown {
   }
 }
 
-async function callAiWithRetry(prompt: string, lovableApiKey: string) {
-  const maxRetries = 4;
-
+async function callGeminiWithRetry(prompt: string, apiKey: string) {
+  const maxRetries = 3;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${lovableApiKey}`,
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "google/gemini-2.5-flash-lite",
-        messages: [
-          { role: "system", content: "You are a quiz question generator. Return ONLY valid raw JSON, no markdown, no code fences." },
-          { role: "user", content: prompt },
-        ],
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 500 },
       }),
     });
 
-    if (response.ok) {
-      return response;
-    }
+    if (response.ok) return response;
 
     const errText = await response.text();
-    console.error(`AI gateway error attempt ${attempt + 1}:`, response.status, errText);
+    console.error(`Gemini API error attempt ${attempt + 1}:`, response.status, errText);
 
     if (response.status === 429 && attempt < maxRetries) {
-      const delay = Math.min(12000, 1200 * 2 ** attempt) + Math.floor(Math.random() * 500);
+      const delay = Math.min(10000, 1500 * 2 ** attempt) + Math.floor(Math.random() * 500);
       await sleep(delay);
       continue;
     }
 
     return new Response(errText, { status: response.status });
   }
-
   return new Response(JSON.stringify({ error: "Max retries reached" }), { status: 429 });
 }
 
@@ -81,9 +72,9 @@ serve(async (req) => {
       });
     }
 
-    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
-    if (!LOVABLE_API_KEY) {
-      return new Response(JSON.stringify({ error: "AI API key not configured" }), {
+    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
+    if (!GEMINI_API_KEY) {
+      return new Response(JSON.stringify({ error: "GEMINI_API_KEY not configured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -93,31 +84,21 @@ serve(async (req) => {
     const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
     const prompt = `Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Previous questions already asked: ${historyText}. Return ONLY raw JSON with no markdown, no code fences, no extra text: { "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why correct." }`;
 
-    const response = await callAiWithRetry(prompt, LOVABLE_API_KEY);
+    const response = await callGeminiWithRetry(prompt, GEMINI_API_KEY);
 
     if (!response.ok) {
       if (response.status === 429) {
-        return new Response(JSON.stringify({ error: "We hit a temporary AI rate limit. Please wait a few seconds and retry." }), {
-          status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        return new Response(JSON.stringify({ error: "Rate limited. Please wait a few seconds and retry." }), {
+          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
         });
       }
-
-      if (response.status === 402) {
-        return new Response(JSON.stringify({ error: "AI credits exhausted. Please add funds." }), {
-          status: 402,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      return new Response(JSON.stringify({ error: "AI service error" }), {
-        status: 502,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      return new Response(JSON.stringify({ error: "Gemini API error" }), {
+        status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const data = await response.json();
-    const rawText = data.choices?.[0]?.message?.content ?? "";
+    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
     const question = extractJson(rawText);
 
     return new Response(JSON.stringify(question), {
