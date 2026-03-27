@@ -54,15 +54,22 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
     setLoading(true);
     setError(false);
     lastFetchRef.current = { lvl, history };
+
     try {
       const { data, error: fnError } = await supabase.functions.invoke("generate-question", {
         body: { concept, level: lvl, questionHistory: history },
       });
-      if (fnError) throw fnError;
+
+      if (fnError) {
+        const message = (fnError as { message?: string }).message ?? "Failed to generate question";
+        throw new Error(message);
+      }
+
       setQuestion(data as Question);
       setQuestionHistory((prev) => [...prev, (data as Question).question]);
     } catch (e) {
       console.error(e);
+      setQuestion(null);
       setError(true);
     } finally {
       setLoading(false);
