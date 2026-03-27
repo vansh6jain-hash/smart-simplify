@@ -1,5 +1,8 @@
-import { Brain, Baby, BookOpen, GraduationCap, RotateCcw } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Brain, Baby, BookOpen, GraduationCap, RotateCcw, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
 function getLevelLabel(level: number) {
   if (level <= 3) return "Child";
@@ -13,15 +16,6 @@ function getLevelIcon(level: number) {
   return <GraduationCap className="h-10 w-10" />;
 }
 
-function getExplanation(concept: string, level: number) {
-  const label = getLevelLabel(level);
-  if (label === "Child")
-    return `Imagine ${concept} is like a magic trick that happens in nature! It's something really cool that scientists study to understand how the world works.`;
-  if (label === "Beginner")
-    return `${concept} is a fundamental concept that involves specific processes and principles. It plays an important role in its field and understanding it helps build a foundation for more advanced topics.`;
-  return `${concept} involves complex mechanisms and interactions at multiple scales. A deep understanding requires grasping the underlying mathematical frameworks, empirical evidence, and current research frontiers.`;
-}
-
 interface ResultScreenProps {
   concept: string;
   level: number;
@@ -31,6 +25,27 @@ interface ResultScreenProps {
 
 const ResultScreen = ({ concept, level, correctCount, onRestart }: ResultScreenProps) => {
   const label = getLevelLabel(level);
+  const [explanation, setExplanation] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchExplanation = async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke("generate-explanation", {
+          body: { concept, level },
+        });
+        if (error) throw error;
+        setExplanation(data.explanation);
+      } catch (e) {
+        console.error(e);
+        toast.error("Failed to generate explanation.");
+        setExplanation(`${concept} is a fascinating topic. Understanding it at a ${label.toLowerCase()} level means grasping its core principles and how they connect to everyday life.`);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchExplanation();
+  }, [concept, level, label]);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-4 py-8">
@@ -61,9 +76,15 @@ const ResultScreen = ({ concept, level, correctCount, onRestart }: ResultScreenP
           <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
             {concept} — explained for {label.toLowerCase()} level
           </h3>
-          <p className="text-base leading-relaxed text-card-foreground">
-            {getExplanation(concept, level)}
-          </p>
+          {loading ? (
+            <div className="flex items-center justify-center py-6">
+              <Loader2 className="h-6 w-6 animate-spin text-primary" />
+            </div>
+          ) : (
+            <p className="text-base leading-relaxed text-card-foreground">
+              {explanation}
+            </p>
+          )}
         </div>
 
         {/* Restart */}
