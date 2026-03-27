@@ -1,32 +1,62 @@
 # KnowFirst AI
 
-An adaptive AI-powered quiz app that assesses your knowledge level on any topic using multiple-choice questions powered by GROQ's LLaMA models.
+An adaptive AI-powered quiz app that assesses your knowledge level on any topic using multiple-choice questions and provides rich structured explanations powered by GROQ's LLaMA models.
 
 ## Architecture
 
 **Frontend**: React + Vite + TypeScript + Tailwind CSS + shadcn/ui  
-**Backend**: Express.js server (TypeScript, compiled with tsx in dev)
+**Backend**: Express.js server (TypeScript via tsx in dev)
 
-### How it works
-- The Vite dev server runs on **port 5000** (the webview port)
-- The Express API server runs on **port 3000**
-- Vite proxies all `/api/*` requests to the Express server
-- In production, the Express server serves the built frontend static files
+### Dev server setup
+- Vite dev server on **port 5000** (the webview port)
+- Express API server on **port 3000**
+- Vite proxies all `/api/*` requests to Express
+
+## Home Screen — 4 Input Cases
+
+| Case | Concept | File | Action |
+|------|---------|------|--------|
+| 1 | ✅ | ❌ | 5 MCQs → level detection → structured explanation |
+| 2 | ✅ | ✅ | 5 MCQs grounded in material → structured explanation |
+| 3 | ❌ | ✅ | Skip quiz → full material breakdown (MaterialExplainScreen) |
+| 4 | ❌ | ❌ | Inline validation error — cannot proceed |
 
 ## Key Files
 
-- `server/index.ts` — Express API server with three endpoints:
-  - `POST /api/extract-text-from-file` — Extracts text from uploaded PDF/image using GROQ
+### Server
+- `server/index.ts` — Express API with 4 endpoints:
+  - `POST /api/extract-text-from-file` — Extracts text from PDF/image using GROQ vision
   - `POST /api/generate-question` — Generates adaptive MCQ questions via GROQ LLaMA
-  - `POST /api/generate-explanation` — Generates concept explanations via GROQ LLaMA
-- `src/lib/api.ts` — Frontend API client (wraps fetch calls to `/api/*`)
-- `src/components/HomeScreen.tsx` — Landing page with concept input and file upload
-- `src/components/QuizScreen.tsx` — Adaptive quiz with difficulty scaling
-- `src/components/ResultScreen.tsx` — Results with level, score, and AI explanation
+  - `POST /api/generate-explanation` — Returns **structured JSON** explanation at the user's level (2000 tokens)
+  - `POST /api/explain-material` — Deep structured breakdown of uploaded material (2000 tokens)
+
+### Frontend
+- `src/lib/api.ts` — Typed fetch wrappers for all API endpoints
+- `src/pages/Index.tsx` — App state machine: home | quiz | result | material-explain
+- `src/components/HomeScreen.tsx` — 4-case logic, file upload, validation
+- `src/components/QuizScreen.tsx` — Adaptive MCQ with difficulty scaling (1–10)
+- `src/components/ResultScreen.tsx` — Score + difficulty curve + ExplanationRenderer
+- `src/components/MaterialExplainScreen.tsx` — File-only path: full material breakdown
+- `src/components/ExplanationRenderer.tsx` — Rich renderer for structured explanation JSON
+
+### ExplanationRenderer — Structured JSON Format
+```json
+{
+  "title": "...",
+  "summary": "...",
+  "sections": [
+    { "heading": "...", "type": "text|bullets|table|keyvalue", "content": "..." }
+  ],
+  "key_terms": [{ "term": "...", "definition": "..." }],
+  "key_takeaways": ["..."],
+  "common_misconceptions": ["..."],
+  "suggested_questions": ["..."]
+}
+```
 
 ## Environment Variables / Secrets
 
-- `GROQ_API_KEY` — Required. GROQ API key for LLaMA model access.
+- `GROQ_API_KEY` — Required. GROQ API key for LLaMA model access. Kept server-side only.
 
 ## Dev
 
@@ -34,10 +64,10 @@ An adaptive AI-powered quiz app that assesses your knowledge level on any topic 
 npm run dev
 ```
 
-Starts the Express server and Vite dev server concurrently.
+Starts Express (port 3000) and Vite (port 5000) concurrently.
 
 ## Notes
 
-- Migrated from Lovable (Supabase Edge Functions → Express server routes)
-- No database needed — all state is in-memory per session
-- GROQ API key is kept server-side only, never exposed to the browser
+- Migrated from Lovable (Supabase Edge Functions → Express routes)
+- No database — all state is in-memory per session
+- Suggested questions on ExplanationRenderer pre-fill concept via sessionStorage + navigate to home

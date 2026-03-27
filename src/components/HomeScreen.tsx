@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { Brain, Sparkles, ArrowRight, Upload, X, FileText, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,19 +10,47 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 
 interface HomeScreenProps {
   onStart: (concept: string, studyMaterial: string) => void;
+  onExplainMaterial: (studyMaterial: string, concept: string) => void;
 }
 
-const HomeScreen = ({ onStart }: HomeScreenProps) => {
+const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
   const [concept, setConcept] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [studyMaterial, setStudyMaterial] = useState("");
   const [fileStatus, setFileStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [fileError, setFileError] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [validationError, setValidationError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const handleStart = () => {
-    if (concept.trim()) onStart(concept.trim(), studyMaterial);
+  // Handle pre-fill from suggested questions on ExplanationRenderer
+  useEffect(() => {
+    const prefill = sessionStorage.getItem("knowfirst_prefill_concept");
+    if (prefill) {
+      setConcept(prefill);
+      sessionStorage.removeItem("knowfirst_prefill_concept");
+    }
+  }, []);
+
+  const handleAction = () => {
+    setValidationError("");
+    const hasConcept = concept.trim().length > 0;
+    const hasMaterial = studyMaterial.trim().length > 0 && fileStatus === "ready";
+
+    // Case 4 — nothing
+    if (!hasConcept && !hasMaterial) {
+      setValidationError("Please enter a concept or upload a file.");
+      return;
+    }
+
+    // Case 3 — only file, no concept → skip quiz, go to material explanation
+    if (!hasConcept && hasMaterial) {
+      onExplainMaterial(studyMaterial, "");
+      return;
+    }
+
+    // Case 1 & 2 — concept present (with or without material) → normal quiz flow
+    onStart(concept.trim(), studyMaterial);
   };
 
   const processFile = useCallback(async (selectedFile: File) => {
@@ -40,6 +68,7 @@ const HomeScreen = ({ onStart }: HomeScreenProps) => {
     setFile(selectedFile);
     setFileStatus("loading");
     setFileError("");
+    setValidationError("");
 
     try {
       const base64 = await new Promise<string>((resolve, reject) => {
@@ -80,6 +109,7 @@ const HomeScreen = ({ onStart }: HomeScreenProps) => {
     setStudyMaterial("");
     setFileStatus("idle");
     setFileError("");
+    setValidationError("");
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -105,38 +135,50 @@ const HomeScreen = ({ onStart }: HomeScreenProps) => {
             <Input
               placeholder="Enter a concept to learn…"
               value={concept}
-              onChange={(e) => setConcept(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleStart()}
-              className="h-14 rounded-xl border-2 border-border bg-card pl-4 pr-14 text-lg shadow-sm transition-colors focus-visible:border-primary"
+              onChange={(e) => { setConcept(e.target.value); setValidationError(""); }}
+              onKeyDown={(e) => e.key === "Enter" && handleAction()}
+              className="h-14 rounded-xl border-2 border-border bg-card pl-4 pr-36 text-lg shadow-sm transition-colors focus-visible:border-primary"
             />
             <Button
-              size="icon"
-              onClick={handleStart}
-              disabled={!concept.trim()}
-              className="absolute right-2 top-1/2 -translate-y-1/2 h-10 w-10 rounded-lg"
+              onClick={handleAction}
+              disabled={fileStatus === "loading"}
+              className="absolute right-2 top-1/2 -translate-y-1/2 h-10 rounded-lg px-4 text-sm font-semibold"
             >
-              <ArrowRight className="h-5 w-5" />
+              Start / Explain
+              <ArrowRight className="ml-1.5 h-4 w-4" />
             </Button>
           </div>
 
-          {/* Quick picks */}
-          <div className="flex flex-wrap items-center justify-center gap-2">
-            <Sparkles className="h-4 w-4 text-muted-foreground" />
-            {quickPicks.map((pick) => (
-              <button
-                key={pick}
-                onClick={() => { setConcept(pick); onStart(pick, studyMaterial); }}
-                className="rounded-full border border-border bg-card px-4 py-1.5 text-sm font-medium text-foreground transition-all hover:border-primary hover:bg-secondary hover:text-primary"
-              >
-                {pick}
-              </button>
-            ))}
-          </div>
+          {/* Validation error */}
+          {validationError && (
+            <p className="flex items-center justify-center gap-1.5 text-sm text-destructive">
+              <AlertCircle className="h-4 w-4" />
+              {validationError}
+            </p>
+          )}
+
+          {/* Quick picks — only show when no file loaded */}
+          {fileStatus !== "ready" && (
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <Sparkles className="h-4 w-4 text-muted-foreground" />
+              {quickPicks.map((pick) => (
+                <button
+                  key={pick}
+                  onClick={() => { setConcept(pick); setValidationError(""); }}
+                  className="rounded-full border border-border bg-card px-4 py-1.5 text-sm font-medium text-foreground transition-all hover:border-primary hover:bg-secondary hover:text-primary"
+                >
+                  {pick}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* File upload */}
         <div className="space-y-3">
-          <p className="text-sm font-medium text-muted-foreground">Upload your study material (optional)</p>
+          <p className="text-sm font-medium text-muted-foreground">
+            Enter a concept, upload your notes, or both — KnowFirst AI adapts to what you know.
+          </p>
 
           {!file ? (
             <div
@@ -191,6 +233,13 @@ const HomeScreen = ({ onStart }: HomeScreenProps) => {
                 <X className="h-4 w-4 text-muted-foreground" />
               </button>
             </div>
+          )}
+
+          {/* Hint when file is ready with no concept */}
+          {fileStatus === "ready" && !concept.trim() && (
+            <p className="text-xs text-primary font-medium">
+              No concept entered — clicking "Start / Explain" will give you a full breakdown of your material.
+            </p>
           )}
         </div>
       </div>

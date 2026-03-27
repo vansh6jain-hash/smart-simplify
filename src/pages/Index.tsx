@@ -3,8 +3,9 @@ import { motion, AnimatePresence } from "framer-motion";
 import HomeScreen from "@/components/HomeScreen";
 import QuizScreen from "@/components/QuizScreen";
 import ResultScreen from "@/components/ResultScreen";
+import MaterialExplainScreen from "@/components/MaterialExplainScreen";
 
-type Screen = "home" | "quiz" | "result";
+type Screen = "home" | "quiz" | "result" | "material-explain";
 
 const pageVariants = {
   initial: { opacity: 0, y: 12 },
@@ -27,6 +28,12 @@ const Index = () => {
     setScreen("quiz");
   };
 
+  const handleExplainMaterial = (material: string, c: string) => {
+    setStudyMaterial(material);
+    setConcept(c);
+    setScreen("material-explain");
+  };
+
   const handleFinish = (level: number, correct: number, history: number[]) => {
     setFinalLevel(level);
     setCorrectCount(correct);
@@ -47,7 +54,7 @@ const Index = () => {
     <AnimatePresence mode="wait">
       {screen === "home" && (
         <motion.div key="home" variants={pageVariants} initial="initial" animate="animate" exit="exit">
-          <HomeScreen onStart={handleStart} />
+          <HomeScreen onStart={handleStart} onExplainMaterial={handleExplainMaterial} />
         </motion.div>
       )}
       {screen === "quiz" && (
@@ -58,6 +65,11 @@ const Index = () => {
       {screen === "result" && (
         <motion.div key="result" variants={pageVariants} initial="initial" animate="animate" exit="exit">
           <ResultScreen concept={concept} level={finalLevel} correctCount={correctCount} levelHistory={levelHistory} studyMaterial={studyMaterial} onRestart={handleRestart} />
+        </motion.div>
+      )}
+      {screen === "material-explain" && (
+        <motion.div key="material-explain" variants={pageVariants} initial="initial" animate="animate" exit="exit">
+          <MaterialExplainScreen studyMaterial={studyMaterial} concept={concept} onRestart={handleRestart} />
         </motion.div>
       )}
     </AnimatePresence>

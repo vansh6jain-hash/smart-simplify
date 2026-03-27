@@ -181,7 +181,7 @@ app.post("/api/generate-question", async (req, res) => {
   }
 });
 
-// POST /api/generate-explanation
+// POST /api/generate-explanation — returns structured JSON
 app.post("/api/generate-explanation", async (req, res) => {
   try {
     const { concept, level, studyMaterial } = req.body;
@@ -190,10 +190,48 @@ app.post("/api/generate-explanation", async (req, res) => {
     }
 
     const levelDescription = getLevelDescription(level);
-    const materialText = studyMaterial?.trim() ? studyMaterial : "No material uploaded.";
+    const levelLabel =
+      level <= 3 ? "Child" : level <= 6 ? "Beginner" : "Expert";
+    const materialText = studyMaterial?.trim() ? studyMaterial : null;
 
-    const systemPrompt = "You are an expert teacher. Be concise and engaging.";
-    const userPrompt = `The user has studied the following material:\n---\n${materialText}\n---\nExplain "${concept}" to ${levelDescription} in 3–5 sentences. If study material is provided, base your explanation primarily on it — use the same examples, terms, and structure from the material. Add one analogy. Return plain text only, no formatting.`;
+    const systemPrompt =
+      "You are an expert teacher. Always respond in valid JSON only, no markdown outside JSON, no code fences.";
+
+    const materialSection = materialText
+      ? `Use this study material as your primary source:\n---\n${materialText}\n---\n`
+      : "";
+
+    const userPrompt = `Explain "${concept}" to ${levelDescription}.
+${materialSection}
+Return this exact JSON structure:
+{
+  "title": "${concept}",
+  "summary": "2-3 sentence overview tailored to ${levelLabel} level",
+  "sections": [
+    {
+      "heading": "Section heading",
+      "type": "text | bullets | table | keyvalue",
+      "content": "..."
+    }
+  ],
+  "key_terms": [{ "term": "...", "definition": "..." }],
+  "key_takeaways": ["...", "...", "..."],
+  "common_misconceptions": ["...", "..."],
+  "suggested_questions": ["...", "...", "..."]
+}
+
+For sections use a mix of types:
+- type "text": content is a paragraph string
+- type "bullets": content is an array of strings
+- type "table": content is { "headers": [...], "rows": [[...],[...]] }
+- type "keyvalue": content is [{ "key": "...", "value": "..." }]
+
+Depth and language must match ${levelLabel} level:
+- Child: simple words, fun analogies, everyday examples, short sentences
+- Beginner: clear language, introduce key terms, relatable analogies
+- Expert: technical depth, precise terminology, edge cases, nuances
+
+Minimum 3 sections. Be thorough.`;
 
     const response = await callGroqWithRetry({
       model: "llama-3.3-70b-versatile",
@@ -202,7 +240,7 @@ app.post("/api/generate-explanation", async (req, res) => {
         { role: "user", content: userPrompt },
       ],
       temperature: 0.7,
-      max_tokens: 500,
+      max_tokens: 2000,
     });
 
     if (response.status === 429) {
@@ -215,11 +253,133 @@ app.post("/api/generate-explanation", async (req, res) => {
     }
 
     const data = await response.json() as any;
-    const explanation = data?.choices?.[0]?.message?.content?.trim() ?? "";
+    const rawText = data?.choices?.[0]?.message?.content ?? "";
 
-    return res.json({ explanation });
+    let parsed;
+    try {
+      const cleaned = rawText.replace(/```json|```/g, "").trim();
+      parsed = JSON.parse(cleaned);
+    } catch {
+      console.error("generate-explanation JSON parse failed:", rawText);
+      return res.status(500).json({ error: "JSON parse failed" });
+    }
+
+    return res.json(parsed);
   } catch (error) {
     console.error("generate-explanation error:", error);
+    return res.status(500).json({
+      error: error instanceof Error ? error.message : "Unknown error",
+    });
+  }
+});
+
+// POST /api/explain-material — deep structured explanation of uploaded material
+app.post("/api/explain-material", async (req, res) => {
+  try {
+    const { studyMaterial, concept } = req.body;
+    if (!studyMaterial?.trim()) {
+      return res.status(400).json({ error: "Missing studyMaterial" });
+    }
+
+    const systemPrompt =
+      "You are an expert teacher and academic explainer. You produce deeply structured, comprehensive, and clear explanations. Always respond in valid JSON only — no markdown outside the JSON, no code fences.";
+
+    let userPrompt: string;
+
+    if (concept?.trim()) {
+      userPrompt = `Explain "${concept}" in full depth using the following study material as your primary source:
+---
+${studyMaterial}
+---
+Return a JSON object with this exact structure:
+{
+  "title": "${concept}",
+  "summary": "2-3 sentence overview focused on ${concept} as covered in this material",
+  "sections": [
+    {
+      "heading": "Section heading",
+      "type": "text | bullets | table | keyvalue",
+      "content": "..."
+    }
+  ],
+  "key_terms": [{ "term": "...", "definition": "..." }],
+  "key_takeaways": ["...", "...", "..."],
+  "common_misconceptions": ["...", "..."],
+  "suggested_questions": ["...", "...", "..."]
+}
+
+For sections use a mix of types:
+- type "text": content is a paragraph string
+- type "bullets": content is an array of strings
+- type "table": content is { "headers": [...], "rows": [[...],[...]] }
+- type "keyvalue": content is [{ "key": "...", "value": "..." }]
+
+Be exhaustive. Cover every concept, definition, formula, and example in the material. Minimum 4 sections.`;
+    } else {
+      userPrompt = `Analyze the following study material completely:
+---
+${studyMaterial}
+---
+Return a JSON object with this exact structure:
+{
+  "title": "Topic name inferred from the material",
+  "summary": "2-3 sentence overview of what this material covers",
+  "sections": [
+    {
+      "heading": "Section heading",
+      "type": "text | bullets | table | keyvalue",
+      "content": "..."
+    }
+  ],
+  "key_terms": [{ "term": "...", "definition": "..." }],
+  "key_takeaways": ["...", "...", "..."],
+  "common_misconceptions": ["...", "..."],
+  "suggested_questions": ["...", "...", "..."]
+}
+
+For sections use a mix of types:
+- type "text": content is a paragraph string
+- type "bullets": content is an array of strings
+- type "table": content is { "headers": [...], "rows": [[...],[...]] }
+- type "keyvalue": content is [{ "key": "...", "value": "..." }]
+
+Be exhaustive. Cover every concept, definition, formula, and example present in the material. Minimum 4 sections.`;
+    }
+
+    const response = await callGroqWithRetry({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 2000,
+    });
+
+    if (response.status === 429) {
+      return res.status(429).json({ error: "Rate limited, please wait a moment." });
+    }
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
+      return res.status(response.status).json({ error: `GROQ API returned status ${response.status}` });
+    }
+
+    const data = await response.json() as any;
+    const rawText = data?.choices?.[0]?.message?.content ?? "";
+
+    let parsed;
+    try {
+      const cleaned = rawText.replace(/```json|```/g, "").trim();
+      parsed = JSON.parse(cleaned);
+    } catch {
+      console.error("explain-material JSON parse failed:", rawText);
+      return res.status(500).json({ error: "JSON parse failed" });
+    }
+
+    return res.json(parsed);
+  } catch (error) {
+    console.error("explain-material error:", error);
     return res.status(500).json({
       error: error instanceof Error ? error.message : "Unknown error",
     });

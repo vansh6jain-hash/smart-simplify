@@ -31,3 +31,7 @@ export async function generateExplanation(
 ) {
   return apiFetch("/api/generate-explanation", { concept, level, studyMaterial });
 }
+
+export async function explainMaterial(studyMaterial: string, concept: string) {
+  return apiFetch("/api/explain-material", { studyMaterial, concept });
+}
