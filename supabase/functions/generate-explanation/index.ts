@@ -27,40 +27,60 @@ serve(async (req) => {
       });
     }
 
-    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
-    if (!GEMINI_API_KEY) {
-      return new Response(JSON.stringify({ error: "GEMINI_API_KEY not configured" }), {
+    const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+    if (!LOVABLE_API_KEY) {
+      console.error("LOVABLE_API_KEY is not set");
+      return new Response(JSON.stringify({ error: "AI API key not configured" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const levelDescription = getLevelDescription(level);
-    const prompt = `Explain ${concept} to ${levelDescription} in 3–5 sentences. Include one fun analogy. Return plain text only, no formatting.`;
+    const prompt = `Explain "${concept}" to ${levelDescription} in 3–5 sentences. Include one fun analogy. Return plain text only, no formatting.`;
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.7, maxOutputTokens: 500 },
-        }),
-      }
-    );
+    console.log("Calling Lovable AI for explanation generation...");
+
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [
+          { role: "system", content: "You explain concepts clearly at the appropriate level. Return plain text only." },
+          { role: "user", content: prompt },
+        ],
+      }),
+    });
 
     if (!response.ok) {
       const errText = await response.text();
-      console.error("Gemini API error:", response.status, errText);
-      return new Response(JSON.stringify({ error: "Gemini API error" }), {
+      console.error("AI gateway error:", response.status, errText);
+
+      if (response.status === 429) {
+        return new Response(JSON.stringify({ error: "Rate limited, please try again shortly." }), {
+          status: 429,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      if (response.status === 402) {
+        return new Response(JSON.stringify({ error: "AI credits exhausted. Please add funds." }), {
+          status: 402,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response(JSON.stringify({ error: "AI service error" }), {
         status: 502,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const data = await response.json();
-    const explanation = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+    const explanation = data.choices?.[0]?.message?.content?.trim() ?? "";
 
     return new Response(JSON.stringify({ explanation }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
