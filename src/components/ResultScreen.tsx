@@ -4,6 +4,8 @@ import { Brain, Baby, BookOpen, GraduationCap, RotateCcw, Loader2, RefreshCw } f
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 
+const TOTAL_QUESTIONS = 5;
+
 function getLevelLabel(level: number) {
   if (level <= 3) return "Child";
   if (level <= 6) return "Beginner";
@@ -27,10 +29,11 @@ interface ResultScreenProps {
   level: number;
   correctCount: number;
   levelHistory: number[];
+  studyMaterial: string;
   onRestart: () => void;
 }
 
-const ResultScreen = ({ concept, level, correctCount, levelHistory, onRestart }: ResultScreenProps) => {
+const ResultScreen = ({ concept, level, correctCount, levelHistory, studyMaterial, onRestart }: ResultScreenProps) => {
   const label = getLevelLabel(level);
   const [explanation, setExplanation] = useState("");
   const [loading, setLoading] = useState(true);
@@ -41,7 +44,7 @@ const ResultScreen = ({ concept, level, correctCount, levelHistory, onRestart }:
     setError(false);
     try {
       const { data, error: fnError } = await supabase.functions.invoke("generate-explanation", {
-        body: { concept, level },
+        body: { concept, level, studyMaterial },
       });
       if (fnError) throw fnError;
       setExplanation(data.explanation);
@@ -85,7 +88,7 @@ const ResultScreen = ({ concept, level, correctCount, levelHistory, onRestart }:
             Level {level}/10
           </span>
           <span className="inline-flex items-center rounded-full bg-secondary px-4 py-2 text-sm font-semibold text-secondary-foreground">
-            Score: {correctCount}/10
+            Score: {correctCount}/{TOTAL_QUESTIONS}
           </span>
         </div>
 
