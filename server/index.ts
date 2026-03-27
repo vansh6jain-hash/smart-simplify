@@ -2,6 +2,10 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createRequire } from "module";
+
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +20,10 @@ function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
   if (level <= 6) return "a beginner, some basic terminology is okay";
   return "an expert, use full technical terminology";
+}
+
+function isMeaningfulText(text: string): boolean {
+  return text.replace(/\s/g, "").length > 100 && /[a-zA-Z]{3,}/.test(text);
 }
 
 async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
@@ -48,40 +56,85 @@ app.post("/api/extract-text-from-file", async (req, res) => {
     let extractedText = "";
 
     if (fileMimeType === "application/pdf") {
-      const binaryStr = Buffer.from(fileBase64, "base64").toString("binary");
-      const textChunks: string[] = [];
-      const regex = /\(([^)]+)\)/g;
-      let match;
-      while ((match = regex.exec(binaryStr)) !== null) {
-        const chunk = match[1];
-        if (chunk.length > 1 && /[a-zA-Z]/.test(chunk)) {
-          textChunks.push(chunk);
-        }
+      // STEP 1 — Try pdf-parse for proper text extraction
+      const buffer = Buffer.from(fileBase64, "base64");
+      let fullText = "";
+      try {
+        const pdfData = await pdfParse(buffer);
+        fullText = pdfData.text || "";
+      } catch (pdfErr) {
+        console.error("pdf-parse failed:", pdfErr);
+        fullText = "";
       }
-      const rawPdfText = textChunks.join(" ").substring(0, 8000);
 
-      if (rawPdfText.trim().length < 20) {
-        extractedText =
-          "PDF text extraction yielded minimal content. The quiz will rely on the concept name.";
-      } else {
+      // STEP 2 — Validate meaningfulness
+      if (isMeaningfulText(fullText)) {
+        // Good extraction — summarise with GROQ
+        const truncated = fullText.substring(0, 8000);
         const response = await callGroqWithRetry({
           model: "llama-3.3-70b-versatile",
           messages: [
             { role: "system", content: "You extract and summarize key concepts from text." },
             {
               role: "user",
-              content: `Extract all key concepts, definitions, and important points from this text. Return as organized plain text:\n\n${rawPdfText}`,
+              content: `Extract all key concepts, definitions, and important points from this text. Return as organized plain text:\n\n${truncated}`,
+            },
+          ],
+          temperature: 0.3,
+          max_tokens: 1500,
+        });
+        if (!response.ok) throw new Error(`GROQ API returned ${response.status}`);
+        const data = await response.json() as any;
+        extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
+      } else {
+        // STEP 3 — Fall back to GROQ vision on the raw PDF
+        console.log("pdf-parse text not meaningful, falling back to GROQ vision");
+        const visionResponse = await callGroqWithRetry({
+          model: "meta-llama/llama-4-scout-17b-16e-instruct",
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image_url",
+                  image_url: { url: `data:${fileMimeType};base64,${fileBase64}` },
+                },
+                {
+                  type: "text",
+                  text: "This is a page from a study document. Extract ALL text, headings, definitions, formulas, and key concepts visible. Return as clean plain text preserving structure.",
+                },
+              ],
             },
           ],
           temperature: 0.3,
           max_tokens: 1500,
         });
 
-        if (!response.ok) throw new Error(`GROQ API returned ${response.status}`);
-        const data = await response.json() as any;
-        extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
+        if (visionResponse.status === 429) {
+          return res.status(429).json({ error: "Rate limited, please wait a moment." });
+        }
+
+        if (visionResponse.ok) {
+          const visionData = await visionResponse.json() as any;
+          const visionText = visionData?.choices?.[0]?.message?.content?.trim() ?? "";
+          if (isMeaningfulText(visionText)) {
+            extractedText = visionText;
+          } else {
+            // STEP 4 — Still not meaningful
+            return res.status(422).json({
+              error:
+                "Could not extract text from this PDF. Please try uploading a clearer file or a PNG/JPG image of your notes.",
+            });
+          }
+        } else {
+          return res.status(422).json({
+            error:
+              "Could not extract text from this PDF. Please try uploading a clearer file or a PNG/JPG image of your notes.",
+          });
+        }
       }
     } else {
+      // Images — use GROQ vision directly
       const response = await callGroqWithRetry({
         model: "meta-llama/llama-4-scout-17b-16e-instruct",
         messages: [
@@ -135,11 +188,19 @@ app.post("/api/generate-question", async (req, res) => {
 
     const levelDescription = getLevelDescription(level);
     const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
-    const materialText = studyMaterial?.trim() ? studyMaterial : "No material uploaded.";
+
+    // BUG 5 — only use material if it contains meaningful content
+    const useMaterial =
+      studyMaterial &&
+      studyMaterial.replace(/\s/g, "").length > 50 &&
+      /[a-zA-Z]{3,}/.test(studyMaterial);
+    const materialBlock = useMaterial
+      ? `Use this study material as context:\n---\n${studyMaterial}\n---\n`
+      : "";
 
     const systemPrompt =
       "You generate MCQ quiz questions. Respond ONLY with valid JSON, no markdown fences, no extra text.";
-    const userPrompt = `The user is studying the following material:\n---\n${materialText}\n---\nGenerate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). If study material is provided, base the question primarily on it. Avoid repeating these questions: ${historyText}.\nReturn ONLY this JSON:\n{ "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why the correct answer is right." }`;
+    const userPrompt = `${materialBlock}Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Avoid repeating these questions: ${historyText}.\nReturn ONLY this JSON:\n{ "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why the correct answer is right." }`;
 
     const response = await callGroqWithRetry({
       model: "llama-3.3-70b-versatile",
@@ -190,16 +251,18 @@ app.post("/api/generate-explanation", async (req, res) => {
     }
 
     const levelDescription = getLevelDescription(level);
-    const levelLabel =
-      level <= 3 ? "Child" : level <= 6 ? "Beginner" : "Expert";
-    const materialText = studyMaterial?.trim() ? studyMaterial : null;
+    const levelLabel = level <= 3 ? "Child" : level <= 6 ? "Beginner" : "Expert";
+
+    const useMaterial =
+      studyMaterial &&
+      studyMaterial.replace(/\s/g, "").length > 50 &&
+      /[a-zA-Z]{3,}/.test(studyMaterial);
+    const materialSection = useMaterial
+      ? `Use this study material as your primary source:\n---\n${studyMaterial}\n---\n`
+      : "";
 
     const systemPrompt =
       "You are an expert teacher. Always respond in valid JSON only, no markdown outside JSON, no code fences.";
-
-    const materialSection = materialText
-      ? `Use this study material as your primary source:\n---\n${materialText}\n---\n`
-      : "";
 
     const userPrompt = `Explain "${concept}" to ${levelDescription}.
 ${materialSection}
@@ -284,13 +347,22 @@ app.post("/api/explain-material", async (req, res) => {
     const systemPrompt =
       "You are an expert teacher and academic explainer. You produce deeply structured, comprehensive, and clear explanations. Always respond in valid JSON only — no markdown outside the JSON, no code fences.";
 
+    // BUG 4 — validate material is readable before asking GROQ to analyze it
+    const materialValidationPrefix = `If the study material below appears to be corrupted, empty, or contains only special characters with no meaningful words, respond with this exact JSON:
+{ "error": "material_unreadable", "message": "The uploaded file could not be read properly." }
+
+Otherwise, analyze and explain the material fully.
+Study material:
+---
+${studyMaterial}
+---`;
+
     let userPrompt: string;
 
     if (concept?.trim()) {
-      userPrompt = `Explain "${concept}" in full depth using the following study material as your primary source:
----
-${studyMaterial}
----
+      userPrompt = `${materialValidationPrefix}
+
+Explain "${concept}" in full depth using the study material above as your primary source.
 Return a JSON object with this exact structure:
 {
   "title": "${concept}",
@@ -316,11 +388,9 @@ For sections use a mix of types:
 
 Be exhaustive. Cover every concept, definition, formula, and example in the material. Minimum 4 sections.`;
     } else {
-      userPrompt = `Analyze the following study material completely:
----
-${studyMaterial}
----
-Return a JSON object with this exact structure:
+      userPrompt = `${materialValidationPrefix}
+
+Analyze the study material above completely and return a JSON object with this exact structure:
 {
   "title": "Topic name inferred from the material",
   "summary": "2-3 sentence overview of what this material covers",

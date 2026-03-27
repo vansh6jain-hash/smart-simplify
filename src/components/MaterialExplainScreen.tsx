@@ -19,15 +19,28 @@ const MaterialExplainScreen = ({
   const [data, setData] = useState<ExplanationData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState(
+    "Could not analyze material. Please try again."
+  );
 
   const fetchExplanation = async () => {
     setLoading(true);
     setError(false);
     try {
       const result = await explainMaterial(studyMaterial, concept);
-      setData(result as ExplanationData);
+
+      // BUG 4 — check for material_unreadable signal from GROQ
+      if (result?.error === "material_unreadable") {
+        setErrorMessage(
+          "Your file could not be analyzed. Please try uploading a PNG or JPG image of your notes instead."
+        );
+        setError(true);
+      } else {
+        setData(result as ExplanationData);
+      }
     } catch (e) {
       console.error(e);
+      setErrorMessage("Could not analyze material. Please try again.");
       setError(true);
     } finally {
       setLoading(false);
@@ -40,9 +53,8 @@ const MaterialExplainScreen = ({
   }, []);
 
   const handleSuggestedQuestion = (q: string) => {
-    onRestart();
-    // Store question for home screen pre-fill via sessionStorage
     sessionStorage.setItem("knowfirst_prefill_concept", q);
+    onRestart();
   };
 
   return (
@@ -74,14 +86,18 @@ const MaterialExplainScreen = ({
             animate={{ opacity: 1 }}
             className="flex flex-col items-center justify-center py-24 gap-4"
           >
-            <div className="rounded-2xl border border-border bg-card p-8 text-center max-w-sm">
-              <p className="text-base text-muted-foreground mb-4">
-                Could not analyze material. Please try again.
-              </p>
-              <Button variant="outline" onClick={fetchExplanation} className="gap-2">
-                <RefreshCw className="h-4 w-4" />
-                Retry
-              </Button>
+            <div className="rounded-2xl border border-border bg-card p-8 text-center max-w-sm space-y-4">
+              <p className="text-base text-muted-foreground">{errorMessage}</p>
+              <div className="flex flex-col gap-2">
+                <Button variant="outline" onClick={fetchExplanation} className="gap-2">
+                  <RefreshCw className="h-4 w-4" />
+                  Retry
+                </Button>
+                <Button variant="ghost" onClick={onRestart} className="gap-2">
+                  <ArrowLeft className="h-4 w-4" />
+                  Start over
+                </Button>
+              </div>
             </div>
           </motion.div>
         ) : data ? (
