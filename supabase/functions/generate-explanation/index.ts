@@ -30,34 +30,37 @@ serve(async (req) => {
     const levelDescription = getLevelDescription(level);
     const prompt = `Explain "${concept}" to ${levelDescription} in 3–5 sentences. Include one fun analogy. Return plain text only, no formatting.`;
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${Deno.env.get('GEMINI_API_KEY')}`;
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${Deno.env.get("API_KEY")}`,
+      },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
-      })
+        model: "llama-3.3-70b-versatile",
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
+        max_tokens: 500,
+      }),
     });
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.error(`Gemini API error: ${response.status} - ${errorBody}`);
-      return new Response(JSON.stringify({ error: `Gemini API returned status ${response.status}`, details: errorBody }), {
+      console.error(`Groq API error: ${response.status} - ${errorBody}`);
+      return new Response(JSON.stringify({ error: `Groq API returned status ${response.status}`, details: errorBody }), {
         status: response.status,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const data = await response.json();
-    const explanation = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? '';
+    const explanation = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
     return new Response(JSON.stringify({ explanation }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
-    console.error('Edge function runtime error:', error);
+    console.error("Edge function runtime error:", error);
     return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
