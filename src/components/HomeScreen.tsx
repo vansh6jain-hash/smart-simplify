@@ -2,7 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { Brain, Sparkles, ArrowRight, Upload, X, FileText, CheckCircle2, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { supabase } from "@/integrations/supabase/client";
+import { extractTextFromFile } from "@/lib/api";
 
 const quickPicks = ["Black holes", "Machine learning", "Blockchain", "DNA replication"];
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/webp"];
@@ -52,11 +52,7 @@ const HomeScreen = ({ onStart }: HomeScreenProps) => {
         reader.readAsDataURL(selectedFile);
       });
 
-      const { data, error } = await supabase.functions.invoke("extract-text-from-file", {
-        body: { fileBase64: base64, fileMimeType: selectedFile.type },
-      });
-
-      if (error) throw error;
+      const data = await extractTextFromFile(base64, selectedFile.type);
       setStudyMaterial(data.extractedText || "");
       setFileStatus("ready");
     } catch (e) {

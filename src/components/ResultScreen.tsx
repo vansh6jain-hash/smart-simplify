@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Brain, Baby, BookOpen, GraduationCap, RotateCcw, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
+import { generateExplanation } from "@/lib/api";
 
 const TOTAL_QUESTIONS = 5;
 
@@ -43,10 +43,7 @@ const ResultScreen = ({ concept, level, correctCount, levelHistory, studyMateria
     setLoading(true);
     setError(false);
     try {
-      const { data, error: fnError } = await supabase.functions.invoke("generate-explanation", {
-        body: { concept, level, studyMaterial },
-      });
-      if (fnError) throw fnError;
+      const data = await generateExplanation(concept, level, studyMaterial);
       setExplanation(data.explanation);
     } catch (e) {
       console.error(e);

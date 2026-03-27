@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, XCircle, ArrowRight, Loader2, RefreshCw, FileText } from "lucide-react";
-import { supabase } from "@/integrations/supabase/client";
+import { generateQuestion } from "@/lib/api";
 
 const TOTAL_QUESTIONS = 5;
 const optionLetters = ["A", "B", "C", "D"];
@@ -60,21 +60,18 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
     lastFetchRef.current = { lvl, history };
 
     try {
-      const { data, error: fnError } = await supabase.functions.invoke("generate-question", {
-        body: { concept, level: lvl, questionHistory: history, studyMaterial },
-      });
-
-      if (fnError) {
-        const msg = (fnError as { message?: string }).message ?? "";
-        if (msg.includes("429")) {
+      const data = await generateQuestion(concept, lvl, history, studyMaterial).catch((err) => {
+        if (err?.status === 429 || (err?.message ?? "").includes("429")) {
           setRetrying(true);
           setError(true);
           setLoading(false);
           setTimeout(() => fetchQuestion(lvl, history), 5000);
-          return;
+          return null;
         }
-        throw new Error(msg || "Failed to generate question");
-      }
+        throw err;
+      });
+
+      if (data === null) return;
 
       setQuestion(data as Question);
       setQuestionHistory((prev) => [...prev, (data as Question).question]);
