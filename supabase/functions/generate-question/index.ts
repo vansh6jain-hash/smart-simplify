@@ -6,55 +6,10 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
-
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
   if (level <= 6) return "a beginner, some basic terminology is okay";
   return "an expert, use full technical terminology";
-}
-
-function extractJson(raw: string): unknown {
-  let cleaned = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-  const start = cleaned.search(/[\{\[]/);
-  const end = cleaned.lastIndexOf(start !== -1 && cleaned[start] === "[" ? "]" : "}");
-  if (start === -1 || end === -1) throw new Error("No JSON found in response");
-  cleaned = cleaned.substring(start, end + 1);
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    cleaned = cleaned.replace(/,\s*}/g, "}").replace(/,\s*]/g, "]").replace(/[\x00-\x1F\x7F]/g, "");
-    return JSON.parse(cleaned);
-  }
-}
-
-async function callGeminiWithRetry(prompt: string, apiKey: string) {
-  const maxRetries = 3;
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const response = await fetch(`${GEMINI_URL}?key=${apiKey}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: { temperature: 0.7, maxOutputTokens: 500 },
-      }),
-    });
-
-    if (response.ok) return response;
-
-    const errText = await response.text();
-    console.error(`Gemini API error attempt ${attempt + 1}:`, response.status, errText);
-
-    if (response.status === 429 && attempt < maxRetries) {
-      const delay = Math.min(10000, 1500 * 2 ** attempt) + Math.floor(Math.random() * 500);
-      await sleep(delay);
-      continue;
-    }
-
-    return new Response(errText, { status: response.status });
-  }
-  return new Response(JSON.stringify({ error: "Max retries reached" }), { status: 429 });
 }
 
 serve(async (req) => {
@@ -72,43 +27,53 @@ serve(async (req) => {
       });
     }
 
-    const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY");
-    if (!GEMINI_API_KEY) {
-      return new Response(JSON.stringify({ error: "GEMINI_API_KEY not configured" }), {
+    const levelDescription = getLevelDescription(level);
+    const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
+    const prompt = `Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Previous questions already asked: ${historyText}. Return ONLY raw JSON with no markdown, no code fences, no extra text: { "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why correct." }`;
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${Deno.env.get('GEMINI_API_KEY')}`;
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.7, maxOutputTokens: 500 }
+      })
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`Gemini API error: ${response.status} - ${errorBody}`);
+      return new Response(JSON.stringify({ error: `Gemini API returned status ${response.status}`, details: errorBody }), {
+        status: response.status,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    const data = await response.json();
+    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+
+    let parsed;
+    try {
+      const cleaned = rawText.replace(/```json|```/g, '').trim();
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      console.error("JSON parse failed: ", rawText);
+      return new Response(JSON.stringify({ error: "JSON parse failed: " + rawText }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const levelDescription = getLevelDescription(level);
-    const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
-    const prompt = `Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Previous questions already asked: ${historyText}. Return ONLY raw JSON with no markdown, no code fences, no extra text: { "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why correct." }`;
-
-    const response = await callGeminiWithRetry(prompt, GEMINI_API_KEY);
-
-    if (!response.ok) {
-      if (response.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limited. Please wait a few seconds and retry." }), {
-          status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-      return new Response(JSON.stringify({ error: "Gemini API error" }), {
-        status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    const data = await response.json();
-    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    const question = extractJson(rawText);
-
-    return new Response(JSON.stringify(question), {
+    return new Response(JSON.stringify(parsed), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (e) {
-    console.error("generate-question error:", e);
-    return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+  } catch (error) {
+    console.error('Edge function runtime error:', error);
+    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
+      status: 500,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
 });
