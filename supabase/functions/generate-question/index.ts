@@ -6,10 +6,31 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
   if (level <= 6) return "a beginner, some basic terminology is okay";
   return "an expert, use full technical terminology";
+}
+
+async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${Deno.env.get("GROQ_API_KEY")}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 429 && i < retries - 1) {
+      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+      continue;
+    }
+    return res;
+  }
+  throw new Error("All retries exhausted");
 }
 
 serve(async (req) => {
@@ -18,7 +39,7 @@ serve(async (req) => {
   }
 
   try {
-    const { concept, level, questionHistory } = await req.json();
+    const { concept, level, questionHistory, studyMaterial } = await req.json();
 
     if (!concept || typeof level !== "number") {
       return new Response(JSON.stringify({ error: "Missing concept or level" }), {
@@ -29,8 +50,9 @@ serve(async (req) => {
 
     const levelDescription = getLevelDescription(level);
     const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
-    const prompt = `Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Previous questions already asked: ${historyText}. Return ONLY raw JSON with no markdown, no code fences, no extra text: { "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why correct." }`;
+    const materialText = studyMaterial?.trim() ? studyMaterial : "No material uploaded.";
 
+<<<<<<< HEAD
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -43,12 +65,37 @@ serve(async (req) => {
         temperature: 0.7,
         max_tokens: 500,
       }),
+=======
+    const systemPrompt = "You generate MCQ quiz questions. Respond ONLY with valid JSON, no markdown fences, no extra text.";
+    const userPrompt = `The user is studying the following material:\n---\n${materialText}\n---\nGenerate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). If study material is provided, base the question primarily on it. Avoid repeating these questions: ${historyText}.\nReturn ONLY this JSON:\n{ "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why the correct answer is right." }`;
+
+    const response = await callGroqWithRetry({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 500,
+>>>>>>> 2bb74c7b8522409c2f3710f6a6fc8992f5b08955
     });
+
+    if (response.status === 429) {
+      return new Response(JSON.stringify({ error: "Rate limited, please wait a moment." }), {
+        status: 429,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     if (!response.ok) {
       const errorBody = await response.text();
+<<<<<<< HEAD
       console.error(`Groq API error: ${response.status} - ${errorBody}`);
       return new Response(JSON.stringify({ error: `Groq API returned status ${response.status}`, details: errorBody }), {
+=======
+      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
+      return new Response(JSON.stringify({ error: `GROQ API returned status ${response.status}`, details: errorBody }), {
+>>>>>>> 2bb74c7b8522409c2f3710f6a6fc8992f5b08955
         status: response.status,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
