@@ -6,10 +6,31 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
   if (level <= 6) return "a beginner, some basic terminology is okay";
   return "an expert, use full technical terminology";
+}
+
+async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
+  for (let i = 0; i < retries; i++) {
+    const res = await fetch(GROQ_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${Deno.env.get("GROQ_API_KEY")}`,
+      },
+      body: JSON.stringify(body),
+    });
+    if (res.status === 429 && i < retries - 1) {
+      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+      continue;
+    }
+    return res;
+  }
+  throw new Error("All retries exhausted");
 }
 
 serve(async (req) => {
@@ -18,7 +39,7 @@ serve(async (req) => {
   }
 
   try {
-    const { concept, level } = await req.json();
+    const { concept, level, studyMaterial } = await req.json();
 
     if (!concept || typeof level !== "number") {
       return new Response(JSON.stringify({ error: "Missing concept or level" }), {
@@ -28,26 +49,32 @@ serve(async (req) => {
     }
 
     const levelDescription = getLevelDescription(level);
-    const prompt = `Explain "${concept}" to ${levelDescription} in 3–5 sentences. Include one fun analogy. Return plain text only, no formatting.`;
+    const materialText = studyMaterial?.trim() ? studyMaterial : "No material uploaded.";
 
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("API_KEY")}`,
-      },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 500,
-      }),
+    const systemPrompt = "You are an expert teacher. Be concise and engaging.";
+    const userPrompt = `The user has studied the following material:\n---\n${materialText}\n---\nExplain "${concept}" to ${levelDescription} in 3–5 sentences. If study material is provided, base your explanation primarily on it — use the same examples, terms, and structure from the material. Add one analogy. Return plain text only, no formatting.`;
+
+    const response = await callGroqWithRetry({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.7,
+      max_tokens: 500,
     });
+
+    if (response.status === 429) {
+      return new Response(JSON.stringify({ error: "Rate limited, please wait a moment." }), {
+        status: 429,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.error(`Groq API error: ${response.status} - ${errorBody}`);
-      return new Response(JSON.stringify({ error: `Groq API returned status ${response.status}`, details: errorBody }), {
+      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
+      return new Response(JSON.stringify({ error: `GROQ API returned status ${response.status}`, details: errorBody }), {
         status: response.status,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });

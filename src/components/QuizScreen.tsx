@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { CheckCircle2, XCircle, ArrowRight, Loader2, RefreshCw } from "lucide-react";
+import { CheckCircle2, XCircle, ArrowRight, Loader2, RefreshCw, FileText } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 
+const TOTAL_QUESTIONS = 5;
 const optionLetters = ["A", "B", "C", "D"];
 
 function getLevelLabel(level: number) {
@@ -33,10 +34,11 @@ interface Question {
 
 interface QuizScreenProps {
   concept: string;
+  studyMaterial: string;
   onFinish: (level: number, correct: number, levelHistory: number[]) => void;
 }
 
-const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
+const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [level, setLevel] = useState(5);
   const [correctCount, setCorrectCount] = useState(0);
@@ -47,22 +49,31 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
   const [question, setQuestion] = useState<Question | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
   const lastFetchRef = useRef<{ lvl: number; history: string[] }>({ lvl: 5, history: [] });
 
   const fetchQuestion = async (lvl: number, history: string[]) => {
     setLoading(true);
     setError(false);
+    setRetrying(false);
     lastFetchRef.current = { lvl, history };
 
     try {
       const { data, error: fnError } = await supabase.functions.invoke("generate-question", {
-        body: { concept, level: lvl, questionHistory: history },
+        body: { concept, level: lvl, questionHistory: history, studyMaterial },
       });
 
       if (fnError) {
-        const message = (fnError as { message?: string }).message ?? "Failed to generate question";
-        throw new Error(message);
+        const msg = (fnError as { message?: string }).message ?? "";
+        if (msg.includes("429")) {
+          setRetrying(true);
+          setError(true);
+          setLoading(false);
+          setTimeout(() => fetchQuestion(lvl, history), 5000);
+          return;
+        }
+        throw new Error(msg || "Failed to generate question");
       }
 
       setQuestion(data as Question);
@@ -102,7 +113,7 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
   };
 
   const handleNext = () => {
-    if (currentQuestion >= 9) {
+    if (currentQuestion >= TOTAL_QUESTIONS - 1) {
       onFinish(level, correctCount, levelHistory);
       return;
     }
@@ -119,11 +130,17 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-4 py-8">
       <div className="w-full max-w-lg space-y-6">
-        {/* Concept chip */}
-        <div className="flex items-center justify-center">
+        {/* Concept chip + material badge */}
+        <div className="flex items-center justify-center gap-2 flex-wrap">
           <span className="rounded-full bg-primary/10 px-4 py-1.5 text-sm font-semibold text-primary">
             {concept}
           </span>
+          {studyMaterial && (
+            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-700">
+              <FileText className="h-3 w-3" />
+              Using your material
+            </span>
+          )}
         </div>
 
         {/* Progress bar + level badge */}
@@ -136,7 +153,6 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
               {getLevelLabel(level)}
             </span>
           </div>
-          {/* Animated colored progress bar */}
           <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
             <motion.div
               className={`h-full rounded-full ${getBarColor(level)}`}
@@ -148,7 +164,7 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
 
         {/* Question counter */}
         <p className="text-center text-sm font-medium text-muted-foreground">
-          Question {currentQuestion + 1} of 10
+          Question {currentQuestion + 1} of {TOTAL_QUESTIONS}
         </p>
 
         {/* Question card */}
@@ -169,12 +185,16 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
             ) : error ? (
               <div className="flex flex-col items-center justify-center py-12 gap-4">
                 <p className="text-sm text-muted-foreground text-center">
-                  Oops — the AI is a bit busy right now. Wait a few seconds, then retry this question.
+                  {retrying
+                    ? "AI is busy, retrying…"
+                    : "Oops — the AI is a bit busy right now. Wait a few seconds, then retry this question."}
                 </p>
-                <Button variant="outline" onClick={handleRetry} className="gap-2">
-                  <RefreshCw className="h-4 w-4" />
-                  Retry question
-                </Button>
+                {!retrying && (
+                  <Button variant="outline" onClick={handleRetry} className="gap-2">
+                    <RefreshCw className="h-4 w-4" />
+                    Retry question
+                  </Button>
+                )}
               </div>
             ) : question ? (
               <>
@@ -192,7 +212,6 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
                       optionClass +=
                         "border-border bg-card text-foreground hover:border-primary/50 hover:bg-secondary";
                     } else if (letter === question.correct) {
-                      // Always highlight correct answer green
                       optionClass += "border-success bg-success/10 text-success";
                     } else if (letter === selectedAnswer) {
                       optionClass += "border-destructive bg-destructive/10 text-destructive";
@@ -221,7 +240,6 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
                   })}
                 </div>
 
-                {/* Feedback */}
                 {answered && (
                   <motion.div
                     initial={{ opacity: 0, y: 8 }}
@@ -252,7 +270,7 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
         {answered && !loading && (
           <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
             <Button onClick={handleNext} className="w-full h-12 rounded-xl text-base font-semibold gap-2">
-              {currentQuestion >= 9 ? "See Results" : "Next"}
+              {currentQuestion >= TOTAL_QUESTIONS - 1 ? "See Results" : "Next"}
               <ArrowRight className="h-4 w-4" />
             </Button>
           </motion.div>
