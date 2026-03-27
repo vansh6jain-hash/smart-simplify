@@ -169,11 +169,11 @@ const QuizScreen = ({ concept, onFinish }: QuizScreenProps) => {
             ) : error ? (
               <div className="flex flex-col items-center justify-center py-12 gap-4">
                 <p className="text-sm text-muted-foreground text-center">
-                  Oops! Couldn't generate a question. Check your connection and try again.
+                  Oops — the AI is a bit busy right now. Wait a few seconds, then retry this question.
                 </p>
                 <Button variant="outline" onClick={handleRetry} className="gap-2">
                   <RefreshCw className="h-4 w-4" />
-                  Retry
+                  Retry question
                 </Button>
               </div>
             ) : question ? (
