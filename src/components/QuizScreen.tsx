@@ -119,11 +119,19 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
     await waitIfNeeded(setCountdown);
 
     try {
-      const { questionBank: bank } = await generateQuestionBank(concept, studyMaterial, 5);
+      console.log('[v0] Generating question bank for concept:', concept);
+      
+      const response = await generateQuestionBank(concept, studyMaterial, 5);
+      const bank = response.questionBank;
+      
+      console.log('[v0] Question bank received:', {
+        childCount: bank?.child?.length,
+        beginnerCount: bank?.beginner?.length,
+        expertCount: bank?.expert?.length
+      });
 
       if (!bank) {
-        setError("Failed to generate questions. Please try again.");
-        return;
+        throw new Error('No questionBank in response: ' + JSON.stringify(response).slice(0, 200));
       }
 
       setQuestionBank(bank);
@@ -132,8 +140,7 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
       const first = pickNextQuestion(bank, initialUsed, 5);
 
       if (!first) {
-        setError("No questions available. Please try again.");
-        return;
+        throw new Error('Could not pick first question from bank');
       }
 
       setUsedIndices((prev) => ({
@@ -146,9 +153,9 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
       setLevelHistory([5]);
       setAnswers([]);
       setScreen("quiz");
-    } catch (e) {
-      console.error(e);
-      setError("Failed to generate questions. Please try again.");
+    } catch (error: any) {
+      console.error('handleStart failed:', error);
+      setError(`Error: ${error?.message || error?.toString() || 'Unknown error'}`);
     }
   };
 

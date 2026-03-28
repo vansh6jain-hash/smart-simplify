@@ -1,3 +1,6 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import path from "path";
@@ -191,8 +194,18 @@ app.post("/api/extract-text-from-file", async (req, res) => {
   }
 });
 
+// OPTIONS handler for CORS preflight
+app.options('/api/generate-question', (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.sendStatus(200);
+});
+
 // POST /api/generate-question — batch generates 15 questions (5 per difficulty tier)
 app.post("/api/generate-question", async (req, res) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
   try {
     const { concept, studyMaterial, startLevel } = req.body;
     if (!concept) {
