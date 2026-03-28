@@ -119,16 +119,8 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
     await waitIfNeeded(setCountdown);
 
     try {
-      console.log('[v0] Generating question bank for concept:', concept);
-      
       const response = await generateQuestionBank(concept, studyMaterial, 5);
       const bank = response.questionBank;
-      
-      console.log('[v0] Question bank received:', {
-        childCount: bank?.child?.length,
-        beginnerCount: bank?.beginner?.length,
-        expertCount: bank?.expert?.length
-      });
 
       if (!bank) {
         throw new Error('No questionBank in response: ' + JSON.stringify(response).slice(0, 200));

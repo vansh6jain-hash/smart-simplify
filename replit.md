@@ -1,6 +1,6 @@
 # KnowFirst AI
 
-An adaptive AI-powered quiz app that assesses your knowledge level on any topic using multiple-choice questions and provides rich structured explanations powered by GROQ's LLaMA models.
+An adaptive AI-powered quiz app that assesses your knowledge level on any topic using multiple-choice questions and provides rich structured explanations powered by Google Gemini 2.5 Flash.
 
 ## Architecture
 
@@ -25,8 +25,8 @@ An adaptive AI-powered quiz app that assesses your knowledge level on any topic 
 
 ### Server
 - `server/index.ts` — Express API with 4 endpoints:
-  - `POST /api/extract-text-from-file` — Extracts text from PDF/image using GROQ vision
-  - `POST /api/generate-question` — Generates adaptive MCQ questions via GROQ LLaMA
+  - `POST /api/extract-text-from-file` — Extracts text from PDF/image using Gemini vision
+  - `POST /api/generate-question` — Batch generates 15 MCQ questions (5 per difficulty tier) via Gemini
   - `POST /api/generate-explanation` — Returns **structured JSON** explanation at the user's level (2000 tokens)
   - `POST /api/explain-material` — Deep structured breakdown of uploaded material (2000 tokens)
 
@@ -56,7 +56,7 @@ An adaptive AI-powered quiz app that assesses your knowledge level on any topic 
 
 ## Environment Variables / Secrets
 
-- `GROQ_API_KEY` — Required. GROQ API key for LLaMA model access. Kept server-side only.
+- `GEMINI_API_KEY` — Required. Google Gemini API key. Kept server-side only.
 
 ## Dev
 
