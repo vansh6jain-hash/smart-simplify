@@ -49,6 +49,7 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
   const [question, setQuestion] = useState<Question | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const [retrying, setRetrying] = useState(false);
 
   const lastFetchRef = useRef<{ lvl: number; history: string[] }>({ lvl: 5, history: [] });
