@@ -15,13 +15,12 @@ export async function extractTextFromFile(fileBase64: string, fileMimeType: stri
   return apiFetch("/api/extract-text-from-file", { fileBase64, fileMimeType });
 }
 
-export async function generateQuestion(
+export async function generateQuestionBank(
   concept: string,
-  level: number,
-  questionHistory: string[],
-  studyMaterial: string
+  studyMaterial: string,
+  startLevel: number = 5
 ) {
-  return apiFetch("/api/generate-question", { concept, level, questionHistory, studyMaterial });
+  return apiFetch("/api/generate-question", { concept, studyMaterial, startLevel });
 }
 
 export async function generateExplanation(

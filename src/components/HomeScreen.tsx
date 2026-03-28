@@ -6,6 +6,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { extractTextFromFile } from "@/lib/api";
+import { waitIfNeeded } from "@/lib/apiTimer";
 
 const quickPicks = ["Black holes", "Machine learning", "Blockchain", "DNA replication"];
 const ACCEPTED_TYPES = ["application/pdf", "image/png", "image/jpeg", "image/webp"];
@@ -26,6 +27,7 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
   const [fileError, setFileError] = useState("");
   const [dragOver, setDragOver] = useState(false);
   const [validationError, setValidationError] = useState("");
+  const [countdown, setCountdown] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Handle pre-fill from suggested questions
@@ -92,6 +94,9 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
         reader.readAsDataURL(selectedFile);
       });
 
+      // Wait if needed before API call
+      await waitIfNeeded(setCountdown);
+
       const data = await extractTextFromFile(base64, selectedFile.type);
 
       // BUG 1 STEP 5 — validate extracted text on the frontend
@@ -147,6 +152,20 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
+  // Countdown UI component
+  const CountdownOverlay = () =>
+    countdown > 0 ? (
+      <div className="text-center py-2">
+        <div className="text-xs text-muted-foreground">Almost ready... {countdown}s</div>
+        <div className="h-1 bg-muted rounded-full mt-1 overflow-hidden">
+          <div
+            className="h-full bg-primary rounded-full transition-all duration-1000 ease-linear"
+            style={{ width: `${(countdown / 13) * 100}%` }}
+          />
+        </div>
+      </div>
+    ) : null;
+
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-4">
       <div className="w-full max-w-lg space-y-8 text-center">
@@ -165,7 +184,7 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
         <div className="space-y-3">
           <div className="relative">
             <Input
-              placeholder="Enter a concept to learn…"
+              placeholder="Enter a concept to learn..."
               value={concept}
               onChange={(e) => { setConcept(e.target.value); setValidationError(""); }}
               onKeyDown={(e) => e.key === "Enter" && handleAction()}
@@ -212,6 +231,9 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
             Enter a concept, upload your notes, or both — KnowFirst AI adapts to what you know.
           </p>
 
+          {/* Countdown display */}
+          <CountdownOverlay />
+
           {/* Upload zone — always visible, hidden only when file is set and status is loading/ready/partial */}
           {!file ? (
             <div
@@ -228,7 +250,7 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
                 <p className="text-sm text-muted-foreground">
                   Drag & drop or <span className="text-primary font-medium">browse</span>
                 </p>
-                <p className="text-xs text-muted-foreground">PDF, PNG, JPG, WEBP · Max 10MB</p>
+                <p className="text-xs text-muted-foreground">PDF, PNG, JPG, WEBP - Max 10MB</p>
               </div>
               <input
                 ref={fileInputRef}
@@ -261,7 +283,7 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
                   {fileStatus === "loading" && (
                     <div className="flex items-center gap-1.5 mt-1">
                       <Loader2 className="h-3 w-3 animate-spin text-primary" />
-                      <span className="text-xs text-muted-foreground">Reading your file…</span>
+                      <span className="text-xs text-muted-foreground">Reading your file...</span>
                     </div>
                   )}
 

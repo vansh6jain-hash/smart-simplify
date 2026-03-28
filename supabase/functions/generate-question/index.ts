@@ -3,66 +3,115 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${Deno.env.get("GEMINI_API_KEY")}`;
 
-function getLevelDescription(level: number): string {
-  if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
-  if (level <= 6) return "a beginner, some basic terminology is okay";
-  return "an expert, use full technical terminology";
-}
-
-async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
-  for (let i = 0; i < retries; i++) {
-    const res = await fetch(GROQ_URL, {
+async function callGeminiWithRetry(
+  body: object,
+  retries = 2
+): Promise<Response> {
+  for (let i = 0; i <= retries; i++) {
+    const res = await fetch(GEMINI_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("GROQ_API_KEY")}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (res.status === 429 && i < retries - 1) {
-      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+    if (res.status === 429) {
+      if (i === retries) throw new Error("Rate limited after retries. Please wait 1 minute.");
+      const wait = 15000 * (i + 1);
+      console.log(`429 rate limited. Waiting ${wait}ms...`);
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    if (res.status === 503) {
+      if (i === retries) throw new Error("Gemini unavailable.");
+      await new Promise(r => setTimeout(r, 8000));
       continue;
     }
     return res;
   }
-  throw new Error("All retries exhausted");
+  throw new Error("All retries failed.");
 }
+
+const levelDescription = (l: number) =>
+  l <= 3
+    ? "child aged 7-10, simple everyday words, zero jargon"
+    : l <= 6
+    ? "beginner, some basic terminology okay"
+    : "expert, full technical terminology, deep concepts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const { concept, level, questionHistory, studyMaterial } = await req.json();
+    const { concept, studyMaterial, startLevel } = await req.json();
 
-    if (!concept || typeof level !== "number") {
-      return new Response(JSON.stringify({ error: "Missing concept or level" }), {
+    if (!concept) {
+      return new Response(JSON.stringify({ error: "Missing concept" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    const levelDescription = getLevelDescription(level);
-    const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
-    const materialText = studyMaterial?.trim() ? studyMaterial : "No material uploaded.";
+    const materialBlock = studyMaterial?.trim()
+      ? `Base ALL questions on this study material as the primary source:\n---\n${studyMaterial}\n---`
+      : "";
 
-    const systemPrompt = "You generate MCQ quiz questions. Respond ONLY with valid JSON, no markdown fences, no extra text.";
-    const userPrompt = `The user is studying the following material:\n---\n${materialText}\n---\nGenerate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). If study material is provided, base the question primarily on it. Avoid repeating these questions: ${historyText}.\nReturn ONLY this JSON:\n{ "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why the correct answer is right." }`;
+    const prompt = `Generate exactly 15 unique MCQ questions about "${concept}".
+${materialBlock}
 
-    const response = await callGroqWithRetry({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
+Create exactly 3 groups of exactly 5 questions each:
+
+Group "child": difficulty 2/10
+- Language suitable for ${levelDescription(2)}
+- Use simple analogies and everyday examples
+- Avoid any technical terms
+
+Group "beginner": difficulty 5/10  
+- Language suitable for ${levelDescription(5)}
+- Introduce key terms with brief context
+- Use relatable real-world examples
+
+Group "expert": difficulty 8/10
+- Language suitable for ${levelDescription(8)}
+- Use precise technical terminology
+- Test deep understanding and edge cases
+
+Rules:
+- All 15 questions must be unique, no repetition
+- Cover different aspects of the topic across all questions
+- Each question must have exactly 4 options labeled A) B) C) D)
+- correct field must be exactly one of: "A", "B", "C", or "D"
+
+Return ONLY this exact JSON structure, no markdown, no code fences, no extra text:
+{
+  "child": [
+    {
+      "question": "...",
+      "options": ["A) ...", "B) ...", "C) ...", "D) ..."],
+      "correct": "A",
+      "explanation": "One sentence why this answer is correct."
+    }
+  ],
+  "beginner": [ ...exactly 5 items... ],
+  "expert": [ ...exactly 5 items... ]
+}`;
+
+    const response = await callGeminiWithRetry({
+      contents: [
+        {
+          parts: [{ text: prompt }],
+        },
       ],
-      temperature: 0.7,
-      max_tokens: 500,
+      generationConfig: {
+        temperature: 0.8,
+        maxOutputTokens: 3000,
+      },
     });
 
     if (response.status === 429) {
@@ -74,29 +123,44 @@ serve(async (req) => {
 
     if (!response.ok) {
       const errorBody = await response.text();
-      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
-      return new Response(JSON.stringify({ error: `GROQ API returned status ${response.status}`, details: errorBody }), {
+      console.error(`Gemini API error: ${response.status} - ${errorBody}`);
+      return new Response(JSON.stringify({ error: `Gemini API returned status ${response.status}`, details: errorBody }), {
         status: response.status,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const data = await response.json();
-    const rawText = data?.choices?.[0]?.message?.content ?? "";
+    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+    const cleaned = raw.replace(/```json|```/g, "").trim();
 
     let parsed;
     try {
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
       parsed = JSON.parse(cleaned);
     } catch (e) {
-      console.error("JSON parse failed: ", rawText);
-      return new Response(JSON.stringify({ error: "JSON parse failed: " + rawText }), {
+      console.error("JSON parse failed:", raw.slice(0, 500));
+      return new Response(JSON.stringify({ error: "JSON parse failed: " + raw.slice(0, 500) }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
-    return new Response(JSON.stringify(parsed), {
+    // Validate the response has all 3 groups with at least 3 items each
+    if (
+      !parsed.child ||
+      !parsed.beginner ||
+      !parsed.expert ||
+      parsed.child.length < 3 ||
+      parsed.beginner.length < 3 ||
+      parsed.expert.length < 3
+    ) {
+      return new Response(JSON.stringify({ error: "Invalid question bank structure from Gemini" }), {
+        status: 500,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response(JSON.stringify({ questionBank: parsed }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {

@@ -2,10 +2,9 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import HomeScreen from "@/components/HomeScreen";
 import QuizScreen from "@/components/QuizScreen";
-import ResultScreen from "@/components/ResultScreen";
 import MaterialExplainScreen from "@/components/MaterialExplainScreen";
 
-type Screen = "home" | "quiz" | "result" | "material-explain";
+type Screen = "home" | "quiz" | "material-explain";
 
 const pageVariants = {
   initial: { opacity: 0, y: 12 },
@@ -17,14 +16,10 @@ const Index = () => {
   const [screen, setScreen] = useState<Screen>("home");
   const [concept, setConcept] = useState("");
   const [studyMaterial, setStudyMaterial] = useState("");
-  const [finalLevel, setFinalLevel] = useState(5);
-  const [correctCount, setCorrectCount] = useState(0);
-  const [levelHistory, setLevelHistory] = useState<number[]>([]);
 
   const handleStart = (c: string, material: string) => {
     setConcept(c);
     setStudyMaterial(material);
-    setLevelHistory([]);
     setScreen("quiz");
   };
 
@@ -34,19 +29,16 @@ const Index = () => {
     setScreen("material-explain");
   };
 
-  const handleFinish = (level: number, correct: number, history: number[]) => {
-    setFinalLevel(level);
-    setCorrectCount(correct);
-    setLevelHistory(history);
-    setScreen("result");
+  const handleFinish = () => {
+    // Called when quiz is complete - just return to home
+    setConcept("");
+    setStudyMaterial("");
+    setScreen("home");
   };
 
   const handleRestart = () => {
     setConcept("");
     setStudyMaterial("");
-    setFinalLevel(5);
-    setCorrectCount(0);
-    setLevelHistory([]);
     setScreen("home");
   };
 
@@ -60,11 +52,6 @@ const Index = () => {
       {screen === "quiz" && (
         <motion.div key="quiz" variants={pageVariants} initial="initial" animate="animate" exit="exit">
           <QuizScreen concept={concept} studyMaterial={studyMaterial} onFinish={handleFinish} />
-        </motion.div>
-      )}
-      {screen === "result" && (
-        <motion.div key="result" variants={pageVariants} initial="initial" animate="animate" exit="exit">
-          <ResultScreen concept={concept} level={finalLevel} correctCount={correctCount} levelHistory={levelHistory} studyMaterial={studyMaterial} onRestart={handleRestart} />
         </motion.div>
       )}
       {screen === "material-explain" && (

@@ -3,33 +3,42 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
+    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${Deno.env.get("GEMINI_API_KEY")}`;
 
-async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
-  for (let i = 0; i < retries; i++) {
-    const res = await fetch(GROQ_URL, {
+async function callGeminiWithRetry(
+  body: object,
+  retries = 2
+): Promise<Response> {
+  for (let i = 0; i <= retries; i++) {
+    const res = await fetch(GEMINI_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("GROQ_API_KEY")}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (res.status === 429 && i < retries - 1) {
-      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+    if (res.status === 429) {
+      if (i === retries) throw new Error("Rate limited after retries. Please wait 1 minute.");
+      const wait = 15000 * (i + 1);
+      console.log(`429 rate limited. Waiting ${wait}ms...`);
+      await new Promise(r => setTimeout(r, wait));
+      continue;
+    }
+    if (res.status === 503) {
+      if (i === retries) throw new Error("Gemini unavailable.");
+      await new Promise(r => setTimeout(r, 8000));
       continue;
     }
     return res;
   }
-  throw new Error("All retries exhausted");
+  throw new Error("All retries failed.");
 }
 
 serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return new Response("ok", { headers: corsHeaders });
   }
 
   try {
@@ -45,9 +54,7 @@ serve(async (req) => {
     let extractedText = "";
 
     if (fileMimeType === "application/pdf") {
-      // For PDFs: decode base64, use a text-based GROQ call to summarize
-      // Since we can't use pdfjs-dist in Deno easily, we'll decode and extract what we can
-      // We'll send the raw text extraction request to GROQ
+      // For PDFs: decode base64, use a text-based extraction
       const binaryStr = atob(fileBase64);
       // Simple PDF text extraction: find text between parentheses in PDF stream
       const textChunks: string[] = [];
@@ -65,38 +72,51 @@ serve(async (req) => {
         // Fallback: tell user we couldn't extract much
         extractedText = "PDF text extraction yielded minimal content. The quiz will rely on the concept name.";
       } else {
-        const response = await callGroqWithRetry({
-          model: "llama-3.3-70b-versatile",
-          messages: [
-            { role: "system", content: "You extract and summarize key concepts from text." },
-            { role: "user", content: `Extract all key concepts, definitions, and important points from this text. Return as organized plain text:\n\n${rawPdfText}` },
+        const response = await callGeminiWithRetry({
+          contents: [
+            {
+              parts: [
+                {
+                  text: `You extract and summarize key concepts from text. Extract all key concepts, definitions, and important points from this text. Return as organized plain text:\n\n${rawPdfText}`,
+                },
+              ],
+            },
           ],
-          temperature: 0.3,
-          max_tokens: 1500,
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 1500,
+          },
         });
 
         if (!response.ok) {
-          throw new Error(`GROQ API returned ${response.status}`);
+          throw new Error(`Gemini API returned ${response.status}`);
         }
 
         const data = await response.json();
-        extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
+        extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
       }
     } else {
       // For images: use vision model
-      const response = await callGroqWithRetry({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
-        messages: [
+      const response = await callGeminiWithRetry({
+        contents: [
           {
-            role: "user",
-            content: [
-              { type: "image_url", image_url: { url: `data:${fileMimeType};base64,${fileBase64}` } },
-              { type: "text", text: "Extract all text, key concepts, definitions, and important points from this image. Return as plain text." },
+            parts: [
+              {
+                inlineData: {
+                  mimeType: fileMimeType,
+                  data: fileBase64,
+                },
+              },
+              {
+                text: "Extract all text, key concepts, definitions, and important points from this image. Return as plain text.",
+              },
             ],
           },
         ],
-        temperature: 0.3,
-        max_tokens: 1500,
+        generationConfig: {
+          temperature: 0.3,
+          maxOutputTokens: 1500,
+        },
       });
 
       if (response.status === 429) {
@@ -108,12 +128,12 @@ serve(async (req) => {
 
       if (!response.ok) {
         const errBody = await response.text();
-        console.error(`GROQ vision error: ${response.status} - ${errBody}`);
-        throw new Error(`GROQ API returned ${response.status}`);
+        console.error(`Gemini vision error: ${response.status} - ${errBody}`);
+        throw new Error(`Gemini API returned ${response.status}`);
       }
 
       const data = await response.json();
-      extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
+      extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
     }
 
     return new Response(JSON.stringify({ extractedText }), {

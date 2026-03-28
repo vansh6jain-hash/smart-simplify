@@ -3,6 +3,7 @@ import { motion } from "framer-motion";
 import { ArrowLeft, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { explainMaterial } from "@/lib/api";
+import { waitIfNeeded } from "@/lib/apiTimer";
 import ExplanationRenderer, { ExplanationData } from "@/components/ExplanationRenderer";
 
 interface MaterialExplainScreenProps {
@@ -22,14 +23,18 @@ const MaterialExplainScreen = ({
   const [errorMessage, setErrorMessage] = useState(
     "Could not analyze material. Please try again."
   );
+  const [countdown, setCountdown] = useState(0);
 
   const fetchExplanation = async () => {
     setLoading(true);
     setError(false);
     try {
+      // Wait if needed before API call
+      await waitIfNeeded(setCountdown);
+
       const result = await explainMaterial(studyMaterial, concept);
 
-      // BUG 4 — check for material_unreadable signal from GROQ
+      // BUG 4 — check for material_unreadable signal from Gemini
       if (result?.error === "material_unreadable") {
         setErrorMessage(
           "Your file could not be analyzed. Please try uploading a PNG or JPG image of your notes instead."
@@ -57,6 +62,20 @@ const MaterialExplainScreen = ({
     onRestart();
   };
 
+  // Countdown UI component
+  const CountdownOverlay = () =>
+    countdown > 0 ? (
+      <div className="text-center py-4">
+        <div className="text-sm text-muted-foreground">Almost ready... {countdown}s</div>
+        <div className="h-1 bg-muted rounded-full mt-2 overflow-hidden">
+          <div
+            className="h-full bg-primary rounded-full transition-all duration-1000 ease-linear"
+            style={{ width: `${(countdown / 13) * 100}%` }}
+          />
+        </div>
+      </div>
+    ) : null;
+
   return (
     <div className="flex min-h-screen flex-col px-4 py-8">
       <div className="w-full max-w-2xl mx-auto space-y-6">
@@ -77,8 +96,9 @@ const MaterialExplainScreen = ({
           >
             <Loader2 className="h-10 w-10 animate-spin text-primary" />
             <p className="text-base text-muted-foreground">
-              Analyzing your material…
+              Analyzing your material...
             </p>
+            <CountdownOverlay />
           </motion.div>
         ) : error ? (
           <motion.div
