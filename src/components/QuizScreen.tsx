@@ -77,10 +77,11 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
 
       setQuestion(data as Question);
       setQuestionHistory((prev) => [...prev, (data as Question).question]);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
       setQuestion(null);
       setError(true);
+      setErrorMessage(e?.message || "Something went wrong. Tap Retry to try again.");
     } finally {
       setLoading(false);
     }
