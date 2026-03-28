@@ -187,7 +187,7 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
                 <p className="text-sm text-muted-foreground text-center">
                 {retrying
                     ? "AI is busy, retrying…"
-                    : `Error: ${error instanceof Error ? (error as any).message : "Something went wrong. Tap Retry to try again."}`}
+                    : errorMessage || "Something went wrong. Tap Retry to try again."}
                 </p>
                 {!retrying && (
                   <Button variant="outline" onClick={handleRetry} className="gap-2">
