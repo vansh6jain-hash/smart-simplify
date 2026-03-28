@@ -57,6 +57,7 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
   const fetchQuestion = async (lvl: number, history: string[]) => {
     setLoading(true);
     setError(false);
+    setErrorMessage("");
     setRetrying(false);
     lastFetchRef.current = { lvl, history };
 
