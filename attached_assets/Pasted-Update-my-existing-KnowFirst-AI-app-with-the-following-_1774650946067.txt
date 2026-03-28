@@ -1,0 +1,246 @@
+Update my existing KnowFirst AI app with the following changes:
+
+---
+
+### 1. HOME SCREEN LOGIC — CONCEPT + MATERIAL COMBINATIONS
+
+Handle these 4 input combinations on the home screen:
+
+CASE 1 — Only concept entered, no file:
+- Behavior: existing flow (5 MCQs → level detection → explanation)
+
+CASE 2 — Concept + file uploaded:
+- Behavior: existing flow but questions and explanation are grounded 
+  in the uploaded material
+
+CASE 3 — Only file uploaded, no concept:
+- When user clicks Start (rename button to "Start / Explain"):
+  - Skip the MCQ quiz entirely
+  - Go directly to a full material explanation screen
+  - Call a new Edge Function "explain-material" that reads the 
+    entire studyMaterial text and generates a comprehensive, 
+    structured explanation of everything in it
+  - Show the explanation in a rich structured format (see section 5)
+
+CASE 4 — Nothing entered:
+- Show inline validation: "Please enter a concept or upload a file."
+- Do not proceed
+
+Update the Start button label to "Start / Explain" to reflect 
+both possible actions.
+
+Update home screen helper text below the inputs:
+"Enter a concept, upload your notes, or both — KnowFirst AI adapts 
+to what you know."
+
+---
+
+### 2. NEW EDGE FUNCTION — explain-material
+
+Create a new Supabase Edge Function called "explain-material":
+- Accepts: { studyMaterial, concept }
+- concept may be empty string if only file was uploaded
+- Use GROQ API (same setup as existing functions):
+  Endpoint: https://api.groq.com/openai/v1/chat/completions
+  Model: llama-3.3-70b-versatile
+  Auth: Authorization: Bearer ${Deno.env.get('GROQ_API_KEY')}
+
+- System prompt:
+  "You are an expert teacher and academic explainer. You produce 
+   deeply structured, comprehensive, and clear explanations. 
+   Always respond in valid JSON only — no markdown outside the 
+   JSON, no code fences."
+
+- User prompt when only material uploaded (no concept):
+  "Analyze the following study material completely:
+   ---
+   [studyMaterial]
+   ---
+   Return a JSON object with this exact structure:
+   {
+     \"title\": \"Topic name inferred from the material\",
+     \"summary\": \"2-3 sentence overview of what this material covers\",
+     \"sections\": [
+       {
+         \"heading\": \"Section heading\",
+         \"type\": \"text | bullets | table | keyvalue\",
+         \"content\": \"...\"
+       }
+     ],
+     \"key_terms\": [{ \"term\": \"...\", \"definition\": \"...\" }],
+     \"key_takeaways\": [\"...\", \"...\", \"...\"],
+     \"common_misconceptions\": [\"...\", \"...\"],
+     \"suggested_questions\": [\"...\", \"...\", \"...\"]
+   }
+   
+   For sections, use a mix of types:
+   - type 'text': content is a paragraph string
+   - type 'bullets': content is an array of strings
+   - type 'table': content is { headers: [...], rows: [[...],[...]] }
+   - type 'keyvalue': content is [{ key: '...', value: '...' }]
+   
+   Be exhaustive. Cover every concept, definition, formula, and 
+   example present in the material. Minimum 4 sections."
+
+- User prompt when concept + material both provided:
+  "Explain \"[concept]\" in full depth using the following study 
+   material as your primary source:
+   ---
+   [studyMaterial]
+   ---
+   Return the same JSON structure as above, but focused specifically 
+   on [concept] as covered in this material."
+
+- Set max_tokens to 2000 for this function (not 500)
+- Keep retry logic (3 attempts, exponential backoff)
+- Safe extract: data.choices[0].message.content → strip fences → JSON.parse
+
+---
+
+### 3. UPDATE generate-explanation EDGE FUNCTION
+
+Increase max_tokens from 500 to 2000.
+
+Update the user prompt to request structured JSON output instead 
+of plain text:
+
+System prompt:
+"You are an expert teacher. Always respond in valid JSON only, 
+ no markdown outside JSON, no code fences."
+
+User prompt:
+"Explain \"[concept]\" to [levelDescription].
+ [If studyMaterial provided: 'Use this study material as your 
+ primary source:\n---\n[studyMaterial]\n---']
+ 
+ Return this exact JSON structure:
+ {
+   \"title\": \"[concept]\",
+   \"summary\": \"2-3 sentence overview tailored to [levelDescription]\",
+   \"sections\": [
+     {
+       \"heading\": \"Section heading\",
+       \"type\": \"text | bullets | table | keyvalue\",
+       \"content\": \"...\"
+     }
+   ],
+   \"key_terms\": [{ \"term\": \"...\", \"definition\": \"...\" }],
+   \"key_takeaways\": [\"...\", \"...\", \"...\"],
+   \"common_misconceptions\": [\"...\", \"...\"],
+   \"suggested_questions\": [\"...\", \"...\", \"...\"]
+ }
+ 
+ Depth and language must match [levelDescription]:
+ - Child: simple words, fun analogies, everyday examples, short sentences
+ - Beginner: clear language, introduce key terms, relatable analogies
+ - Expert: technical depth, precise terminology, edge cases, nuances
+ 
+ Minimum 3 sections. Be thorough."
+
+---
+
+### 4. NEW SCREEN — MATERIAL EXPLANATION SCREEN
+
+Add a new screen called "screen-material-explain" that shows when 
+only a file is uploaded (Case 3 from section 1).
+
+This screen shows:
+- Back button "← Start over" at top left
+- A loading state while explain-material runs:
+  "Analyzing your material..." with spinner
+- After loading: the full structured explanation (see section 5)
+
+---
+
+### 5. RICH STRUCTURED EXPLANATION RENDERER
+
+Create a reusable React component called "ExplanationRenderer" 
+that takes the JSON response from either generate-explanation or 
+explain-material and renders it beautifully.
+
+Render each field as follows:
+
+TITLE:
+- Large heading, font-weight 700, colored with the level accent color
+  (green for Child, amber for Beginner, purple for Expert)
+- If no level (material-only mode), use a neutral dark color
+
+SUMMARY:
+- Italic paragraph in a soft background card
+- Border-left accent line in the level color
+
+SECTIONS (loop through sections array):
+- Each section has a heading (h3 style) and content rendered by type:
+
+  type = "text":
+  → Render as a paragraph with line-height 1.8
+
+  type = "bullets":
+  → Render as a styled unordered list
+  → Each bullet has a small colored square or dot accent
+  → Generous spacing between items
+
+  type = "table":
+  → Render as a proper HTML table
+  → Striped rows (alternating background)
+  → Header row with level accent color background
+  → Borders: 0.5px, rounded corners on the table wrapper
+  → Horizontally scrollable on small screens
+
+  type = "keyvalue":
+  → Render as a two-column definition list
+  → Left column: bold key in level accent color
+  → Right column: value in normal text
+  → Divider line between each row
+
+KEY TERMS:
+- Section heading "Key Terms"
+- Render as a grid of cards (2 columns on desktop, 1 on mobile)
+- Each card: term in bold at top, definition below in smaller text
+- Card has subtle border and rounded corners
+
+KEY TAKEAWAYS:
+- Section heading "Key Takeaways"
+- Render as a numbered list with large colored numbers
+- Each item on its own row with generous padding
+
+COMMON MISCONCEPTIONS:
+- Section heading "Common Misconceptions"
+- Render each as a row with a red X icon on the left
+- Background: very light red/pink tint per row
+
+SUGGESTED QUESTIONS:
+- Section heading "Want to go deeper? Try these questions"
+- Render each as a clickable chip/button
+- On click: call sendPrompt() with that question text so the 
+  user can explore further in the chat
+
+LEVEL BADGE:
+- Show the determined level badge (Child/Beginner/Expert) at the 
+  top of the explanation section
+- If material-only mode, skip the badge
+
+---
+
+### 6. UPDATE RESULT SCREEN
+
+Replace the current plain text explanation on the result screen 
+with the new ExplanationRenderer component.
+
+The result screen flow becomes:
+1. Show level icon + "You're at [Level] level" heading
+2. Show score pills (score, level number)
+3. Show difficulty curve bar chart (existing)
+4. Show full structured explanation using ExplanationRenderer
+5. Show "Try another concept" restart button at the bottom
+
+---
+
+### 7. ERROR HANDLING
+- If explain-material JSON parse fails: show a friendly error card 
+  "Could not analyze material. Please try again." with a Retry button
+- If a section type is unrecognized: fall back to rendering content 
+  as plain text
+- Never crash the renderer on missing fields — check each field 
+  exists before rendering, skip silently if absent
+- Keep all existing retry and blank-screen protection

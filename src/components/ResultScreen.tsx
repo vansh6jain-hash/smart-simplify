@@ -2,7 +2,8 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Brain, Baby, BookOpen, GraduationCap, RotateCcw, Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { supabase } from "@/integrations/supabase/client";
+import { generateExplanation } from "@/lib/api";
+import ExplanationRenderer, { ExplanationData } from "@/components/ExplanationRenderer";
 
 const TOTAL_QUESTIONS = 5;
 
@@ -35,7 +36,7 @@ interface ResultScreenProps {
 
 const ResultScreen = ({ concept, level, correctCount, levelHistory, studyMaterial, onRestart }: ResultScreenProps) => {
   const label = getLevelLabel(level);
-  const [explanation, setExplanation] = useState("");
+  const [explanationData, setExplanationData] = useState<ExplanationData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -43,11 +44,8 @@ const ResultScreen = ({ concept, level, correctCount, levelHistory, studyMateria
     setLoading(true);
     setError(false);
     try {
-      const { data, error: fnError } = await supabase.functions.invoke("generate-explanation", {
-        body: { concept, level, studyMaterial },
-      });
-      if (fnError) throw fnError;
-      setExplanation(data.explanation);
+      const data = await generateExplanation(concept, level, studyMaterial);
+      setExplanationData(data as ExplanationData);
     } catch (e) {
       console.error(e);
       setError(true);
@@ -61,11 +59,16 @@ const ResultScreen = ({ concept, level, correctCount, levelHistory, studyMateria
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [concept, level]);
 
+  const handleSuggestedQuestion = (q: string) => {
+    sessionStorage.setItem("knowfirst_prefill_concept", q);
+    onRestart();
+  };
+
   const maxLevel = 10;
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center px-4 py-8">
-      <div className="w-full max-w-lg space-y-8 text-center">
+      <div className="w-full max-w-2xl space-y-8 text-center">
         {/* Level icon */}
         <motion.div
           initial={{ scale: 0.8, opacity: 0 }}
@@ -121,17 +124,14 @@ const ResultScreen = ({ concept, level, correctCount, levelHistory, studyMateria
         )}
 
         {/* Explanation card */}
-        <div className="rounded-2xl border border-border bg-card p-6 text-left shadow-sm">
-          <h3 className="mb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-            {concept} — explained for {label.toLowerCase()} level
-          </h3>
+        <div className="rounded-2xl border border-border bg-card p-6 shadow-sm text-left">
           {loading ? (
-            <div className="flex flex-col items-center justify-center py-6 gap-2">
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
               <Loader2 className="h-6 w-6 animate-spin text-primary" />
               <p className="text-sm text-muted-foreground">Crafting your explanation…</p>
             </div>
           ) : error ? (
-            <div className="flex flex-col items-center justify-center py-6 gap-3">
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
               <p className="text-sm text-muted-foreground text-center">
                 Couldn't generate the explanation. Please try again.
               </p>
@@ -140,11 +140,13 @@ const ResultScreen = ({ concept, level, correctCount, levelHistory, studyMateria
                 Retry
               </Button>
             </div>
-          ) : (
-            <p className="text-base leading-relaxed text-card-foreground">
-              {explanation}
-            </p>
-          )}
+          ) : explanationData ? (
+            <ExplanationRenderer
+              data={explanationData}
+              level={level}
+              onSuggestedQuestion={handleSuggestedQuestion}
+            />
+          ) : null}
         </div>
 
         {/* Restart */}

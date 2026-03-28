@@ -1,0 +1,154 @@
+Fix the following critical bugs in my KnowFirst AI app:
+
+---
+
+### BUG 1 — PDF TEXT EXTRACTION IS RETURNING GARBAGE
+
+The PDF extraction is sending corrupted/unreadable characters to 
+GROQ instead of actual text. This causes GROQ to say "Unknown or 
+Non-Existent Study Material."
+
+Fix the extract-text-from-file Edge Function completely:
+
+For PDFs, stop using pdfjs-dist alone. Instead use this approach:
+
+STEP 1 — Try pdfjs-dist extraction:
+import { getDocument } from 'pdfjs-dist';
+
+const loadingTask = getDocument({ data: Uint8Array.from(atob(fileBase64), c => c.charCodeAt(0)) });
+const pdf = await loadingTask.promise;
+let fullText = '';
+for (let i = 1; i <= pdf.numPages; i++) {
+  const page = await pdf.getPage(i);
+  const content = await page.getTextContent();
+  const pageText = content.items.map((item) => item.str).join(' ');
+  fullText += pageText + '\n';
+}
+
+STEP 2 — Validate the extracted text:
+After extraction, check if fullText is meaningful:
+const isMeaningful = fullText.replace(/\s/g, '').length > 100 
+  && /[a-zA-Z]{3,}/.test(fullText);
+
+STEP 3 — If NOT meaningful (garbage text), fall back to GROQ vision:
+Convert the first page of the PDF to an image and send it to GROQ 
+using model "meta-llama/llama-4-scout-17b-16e-instruct" with:
+{
+  role: 'user',
+  content: [
+    { 
+      type: 'image_url', 
+      image_url: { url: `data:${fileMimeType};base64,${fileBase64}` } 
+    },
+    { 
+      type: 'text', 
+      text: 'This is a page from a study document. Extract ALL text, headings, definitions, formulas, and key concepts visible. Return as clean plain text preserving structure.' 
+    }
+  ]
+}
+
+STEP 4 — If STILL not meaningful, return an error to the frontend:
+{ error: 'Could not extract text from this PDF. Please try uploading a clearer file or a PNG/JPG image of your notes.' }
+
+STEP 5 — Before sending extractedText to any Edge Function, 
+always validate it is meaningful on the frontend too.
+If extractedText is empty or under 50 characters, treat it as 
+extraction failure and show:
+"We couldn't read your file clearly. You can still enter a concept 
+and continue, or try uploading a clearer image of your notes."
+Do NOT block the quiz — just clear studyMaterial and continue 
+with concept only.
+
+---
+
+### BUG 2 — WRONG FLOW WHEN CONCEPT + FILE ARE BOTH PROVIDED
+
+Currently when both a concept is entered AND a file is uploaded, 
+the app is skipping the MCQ quiz and going straight to explanation.
+This is wrong.
+
+Fix the flow logic on the frontend strictly as follows:
+
+if (concept is entered AND file is uploaded) {
+  → Run 5 MCQ quiz using both concept + studyMaterial
+  → Then show structured explanation at detected level
+}
+
+if (concept is entered AND no file) {
+  → Run 5 MCQ quiz using concept only
+  → Then show structured explanation at detected level
+}
+
+if (NO concept AND file is uploaded) {
+  → Skip quiz entirely
+  → Call explain-material Edge Function
+  → Show full structured material explanation screen
+}
+
+if (NEITHER concept NOR file) {
+  → Show validation error: "Please enter a concept or upload a file."
+  → Do not proceed
+}
+
+Make sure the condition checking happens in the Start button's 
+onClick handler before any navigation occurs. Use strict checks:
+const hasConcept = concept.trim().length > 0;
+const hasMaterial = studyMaterial && studyMaterial.trim().length > 50;
+
+---
+
+### BUG 3 — SHOW EXTRACTION STATUS TO USER
+
+On the home screen, after a file is uploaded:
+- Show "Reading your file..." spinner immediately
+- On success: green checkmark + filename + "Ready" badge
+- On partial success (text short but non-empty): amber warning 
+  badge + "File partially read — questions may be limited"
+- On failure: red badge + "Could not read file. Try a PNG/JPG 
+  image instead." + keep the file upload zone visible so they 
+  can try again
+- Never silently fail — always show the user what happened
+
+---
+
+### BUG 4 — GROQ PROMPT FOR MATERIAL MUST VALIDATE INPUT
+
+In the explain-material Edge Function, add this check at the 
+start of the user prompt:
+
+"If the study material below appears to be corrupted, empty, or 
+contains only special characters with no meaningful words, respond 
+with this exact JSON:
+{ \"error\": \"material_unreadable\", \"message\": \"The uploaded file could not be read properly.\" }
+
+Otherwise, analyze and explain the material fully.
+Study material:
+---
+[studyMaterial]
+---"
+
+On the frontend, check if the response contains error: 
+"material_unreadable" and show:
+"Your file could not be analyzed. Please try uploading a 
+PNG or JPG image of your notes instead."
+
+---
+
+### BUG 5 — QUESTIONS MUST ALWAYS RUN WHEN CONCEPT IS PROVIDED
+
+In generate-question Edge Function, add a fallback:
+If studyMaterial is provided but appears too short or garbled 
+(under 50 meaningful characters), ignore it and generate the 
+question using concept only.
+
+Add this check:
+const useMaterial = studyMaterial && 
+  studyMaterial.replace(/\s/g,'').length > 50 && 
+  /[a-zA-Z]{3,}/.test(studyMaterial);
+
+const materialBlock = useMaterial 
+  ? `Use this study material as context:\n---\n${studyMaterial}\n---` 
+  : '';
+
+This ensures questions are always generated even if file 
+extraction was poor.
