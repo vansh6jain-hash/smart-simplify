@@ -182,9 +182,9 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
             ) : error ? (
               <div className="flex flex-col items-center justify-center py-12 gap-4">
                 <p className="text-sm text-muted-foreground text-center">
-                  {retrying
+                {retrying
                     ? "AI is busy, retrying…"
-                    : "Oops — the AI is a bit busy right now. Wait a few seconds, then retry this question."}
+                    : `Error: ${error instanceof Error ? (error as any).message : "Something went wrong. Tap Retry to try again."}`}
                 </p>
                 {!retrying && (
                   <Button variant="outline" onClick={handleRetry} className="gap-2">
