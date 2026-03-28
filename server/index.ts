@@ -2,10 +2,6 @@ import express from "express";
 import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
-import { createRequire } from "module";
-
-const require = createRequire(import.meta.url);
-const pdfParse = require("pdf-parse");
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,7 +10,7 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
@@ -26,23 +22,26 @@ function isMeaningfulText(text: string): boolean {
   return text.replace(/\s/g, "").length > 100 && /[a-zA-Z]{3,}/.test(text);
 }
 
-async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
+async function callGeminiWithRetry(body: object, retries = 3) {
+  const url = `${GEMINI_URL}?key=${process.env.GEMINI_API_KEY}`;
   for (let i = 0; i < retries; i++) {
-    const res = await fetch(GROQ_URL, {
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.GROQ_API_KEY}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (res.status === 429 && i < retries - 1) {
-      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+    if (res.status === 429 || res.status === 503) {
+      const wait = Math.pow(2, i) * 2000;
+      await new Promise((r) => setTimeout(r, wait));
       continue;
     }
     return res;
   }
-  throw new Error("All retries exhausted");
+  throw new Error("Gemini rate limited after retries. Please wait a moment and try again.");
+}
+
+function extractGeminiText(data: any): string {
+  return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
 }
 
 // POST /api/extract-text-from-file
@@ -53,128 +52,37 @@ app.post("/api/extract-text-from-file", async (req, res) => {
       return res.status(400).json({ error: "Missing fileBase64 or fileMimeType" });
     }
 
-    let extractedText = "";
-
-    if (fileMimeType === "application/pdf") {
-      // STEP 1 — Try pdf-parse for proper text extraction
-      const buffer = Buffer.from(fileBase64, "base64");
-      let fullText = "";
-      try {
-        const pdfData = await pdfParse(buffer);
-        fullText = pdfData.text || "";
-      } catch (pdfErr) {
-        console.error("pdf-parse failed:", pdfErr);
-        fullText = "";
-      }
-
-      // STEP 2 — Validate meaningfulness
-      if (isMeaningfulText(fullText)) {
-        // Good extraction — summarise with GROQ
-        const truncated = fullText.substring(0, 8000);
-        const response = await callGroqWithRetry({
-          model: "llama-3.3-70b-versatile",
-          messages: [
-            { role: "system", content: "You extract and summarize key concepts from text." },
-            {
-              role: "user",
-              content: `Extract all key concepts, definitions, and important points from this text. Return as organized plain text:\n\n${truncated}`,
-            },
-          ],
-          temperature: 0.3,
-          max_tokens: 1500,
-        });
-        if (!response.ok) throw new Error(`GROQ API returned ${response.status}`);
-        const data = await response.json() as any;
-        extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
-      } else {
-        // STEP 3 — Fall back to GROQ vision on the raw PDF
-        console.log("pdf-parse text not meaningful, falling back to GROQ vision");
-        const visionResponse = await callGroqWithRetry({
-          model: "meta-llama/llama-4-scout-17b-16e-instruct",
-          messages: [
-            {
-              role: "user",
-              content: [
-                {
-                  type: "image_url",
-                  image_url: { url: `data:${fileMimeType};base64,${fileBase64}` },
-                },
-                {
-                  type: "text",
-                  text: "This is a page from a study document. Extract ALL text, headings, definitions, formulas, and key concepts visible. Return as clean plain text preserving structure.",
-                },
-              ],
-            },
-          ],
-          temperature: 0.3,
-          max_tokens: 1500,
-        });
-
-        if (visionResponse.status === 429) {
-          return res.status(429).json({ error: "Rate limited, please wait a moment." });
-        }
-
-        if (visionResponse.ok) {
-          const visionData = await visionResponse.json() as any;
-          const visionText = visionData?.choices?.[0]?.message?.content?.trim() ?? "";
-          if (isMeaningfulText(visionText)) {
-            extractedText = visionText;
-          } else {
-            // STEP 4 — Still not meaningful
-            return res.status(422).json({
-              error:
-                "Could not extract text from this PDF. Please try uploading a clearer file or a PNG/JPG image of your notes.",
-            });
-          }
-        } else {
-          return res.status(422).json({
-            error:
-              "Could not extract text from this PDF. Please try uploading a clearer file or a PNG/JPG image of your notes.",
-          });
-        }
-      }
-    } else {
-      // Images — use GROQ vision directly
-      const response = await callGroqWithRetry({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
-        messages: [
-          {
-            role: "user",
-            content: [
-              {
-                type: "image_url",
-                image_url: { url: `data:${fileMimeType};base64,${fileBase64}` },
-              },
-              {
-                type: "text",
-                text: "Extract all text, key concepts, definitions, and important points from this image. Return as plain text.",
-              },
-            ],
-          },
+    // Gemini 2.0 Flash handles PDF, PNG, JPG, WEBP natively via inline_data
+    const response = await callGeminiWithRetry({
+      contents: [{
+        parts: [
+          { inline_data: { mime_type: fileMimeType, data: fileBase64 } },
+          { text: "Extract ALL text, headings, definitions, formulas, bullet points, and key concepts from this document. Preserve the structure and order. Return as clean plain text only." },
         ],
-        temperature: 0.3,
-        max_tokens: 1500,
+      }],
+      generationConfig: { temperature: 0.1, maxOutputTokens: 4000 },
+    });
+
+    if (!response) throw new Error("No response from Gemini");
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(`Gemini file error ${response.status}: ${JSON.stringify(errData)}`);
+    }
+
+    const data = await response.json();
+    const extractedText = extractGeminiText(data);
+
+    if (!extractedText || extractedText.replace(/\s/g, "").length < 50) {
+      return res.json({
+        error: "unreadable",
+        message: "Could not extract text from this file. Try uploading a clearer image (PNG or JPG) of your notes.",
       });
-
-      if (response.status === 429) {
-        return res.status(429).json({ error: "Rate limited, please wait a moment." });
-      }
-      if (!response.ok) {
-        const errBody = await response.text();
-        console.error(`GROQ vision error: ${response.status} - ${errBody}`);
-        throw new Error(`GROQ API returned ${response.status}`);
-      }
-
-      const data = await response.json() as any;
-      extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
     }
 
     return res.json({ extractedText });
   } catch (error) {
     console.error("extract-text-from-file error:", error);
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" });
   }
 });
 
@@ -189,60 +97,51 @@ app.post("/api/generate-question", async (req, res) => {
     const levelDescription = getLevelDescription(level);
     const historyText = questionHistory?.length ? questionHistory.join("; ") : "None";
 
-    // BUG 5 — only use material if it contains meaningful content
     const useMaterial =
-      studyMaterial &&
-      studyMaterial.replace(/\s/g, "").length > 50 &&
-      /[a-zA-Z]{3,}/.test(studyMaterial);
+      studyMaterial && studyMaterial.replace(/\s/g, "").length > 50 && /[a-zA-Z]{3,}/.test(studyMaterial);
     const materialBlock = useMaterial
       ? `Use this study material as context:\n---\n${studyMaterial}\n---\n`
       : "";
 
-    const systemPrompt =
-      "You generate MCQ quiz questions. Respond ONLY with valid JSON, no markdown fences, no extra text.";
-    const userPrompt = `${materialBlock}Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Avoid repeating these questions: ${historyText}.\nReturn ONLY this JSON:\n{ "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why the correct answer is right." }`;
+    const prompt = `You generate MCQ quiz questions. Respond ONLY with valid JSON, no markdown fences, no extra text.
 
-    const response = await callGroqWithRetry({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.7,
-      max_tokens: 500,
+${materialBlock}Generate 1 MCQ about "${concept}" for ${levelDescription} (difficulty ${level}/10). Avoid repeating these questions: ${historyText}.
+Return ONLY this JSON:
+{ "question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct": "A", "explanation": "One sentence why the correct answer is right." }`;
+
+    const response = await callGeminiWithRetry({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 2000 },
     });
 
-    if (response.status === 429) {
-      return res.status(429).json({ error: "Rate limited, please wait a moment." });
-    }
+    if (!response) throw new Error("No response from Gemini");
     if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
-      return res.status(response.status).json({ error: `GROQ API returned status ${response.status}` });
+      const errData = await response.json().catch(() => ({}));
+      console.error(`Gemini API error: ${response.status}`, errData);
+      return res.status(response.status).json({ error: `Gemini API error ${response.status}` });
     }
 
-    const data = await response.json() as any;
-    const rawText = data?.choices?.[0]?.message?.content ?? "";
+    const data = await response.json();
+    const raw = extractGeminiText(data);
+    if (!raw) throw new Error("Empty response from Gemini");
 
+    const cleaned = raw.replace(/```json|```/g, "").trim();
     let parsed;
     try {
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
       parsed = JSON.parse(cleaned);
     } catch {
-      console.error("JSON parse failed:", rawText);
-      return res.status(500).json({ error: "JSON parse failed: " + rawText });
+      console.error("JSON parse failed:", raw);
+      return res.status(500).json({ error: "JSON parse failed: " + raw.slice(0, 300) });
     }
 
     return res.json(parsed);
   } catch (error) {
     console.error("generate-question error:", error);
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" });
   }
 });
 
-// POST /api/generate-explanation — returns structured JSON
+// POST /api/generate-explanation
 app.post("/api/generate-explanation", async (req, res) => {
   try {
     const { concept, level, studyMaterial } = req.body;
@@ -254,17 +153,14 @@ app.post("/api/generate-explanation", async (req, res) => {
     const levelLabel = level <= 3 ? "Child" : level <= 6 ? "Beginner" : "Expert";
 
     const useMaterial =
-      studyMaterial &&
-      studyMaterial.replace(/\s/g, "").length > 50 &&
-      /[a-zA-Z]{3,}/.test(studyMaterial);
+      studyMaterial && studyMaterial.replace(/\s/g, "").length > 50 && /[a-zA-Z]{3,}/.test(studyMaterial);
     const materialSection = useMaterial
       ? `Use this study material as your primary source:\n---\n${studyMaterial}\n---\n`
       : "";
 
-    const systemPrompt =
-      "You are an expert teacher. Always respond in valid JSON only, no markdown outside JSON, no code fences.";
+    const prompt = `You are an expert teacher. Always respond in valid JSON only, no markdown outside JSON, no code fences.
 
-    const userPrompt = `Explain "${concept}" to ${levelDescription}.
+Explain "${concept}" to ${levelDescription}.
 ${materialSection}
 Return this exact JSON structure:
 {
@@ -296,47 +192,39 @@ Depth and language must match ${levelLabel} level:
 
 Minimum 3 sections. Be thorough.`;
 
-    const response = await callGroqWithRetry({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.7,
-      max_tokens: 2000,
+    const response = await callGeminiWithRetry({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 2000 },
     });
 
-    if (response.status === 429) {
-      return res.status(429).json({ error: "Rate limited, please wait a moment." });
-    }
+    if (!response) throw new Error("No response from Gemini");
     if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
-      return res.status(response.status).json({ error: `GROQ API returned status ${response.status}`, details: errorBody });
+      const errData = await response.json().catch(() => ({}));
+      console.error(`Gemini API error: ${response.status}`, errData);
+      return res.status(response.status).json({ error: `Gemini API error ${response.status}` });
     }
 
-    const data = await response.json() as any;
-    const rawText = data?.choices?.[0]?.message?.content ?? "";
+    const data = await response.json();
+    const raw = extractGeminiText(data);
+    if (!raw) throw new Error("Empty response from Gemini");
 
     let parsed;
     try {
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
+      const cleaned = raw.replace(/```json|```/g, "").trim();
       parsed = JSON.parse(cleaned);
     } catch {
-      console.error("generate-explanation JSON parse failed:", rawText);
+      console.error("generate-explanation JSON parse failed:", raw);
       return res.status(500).json({ error: "JSON parse failed" });
     }
 
     return res.json(parsed);
   } catch (error) {
     console.error("generate-explanation error:", error);
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" });
   }
 });
 
-// POST /api/explain-material — deep structured explanation of uploaded material
+// POST /api/explain-material
 app.post("/api/explain-material", async (req, res) => {
   try {
     const { studyMaterial, concept } = req.body;
@@ -344,10 +232,6 @@ app.post("/api/explain-material", async (req, res) => {
       return res.status(400).json({ error: "Missing studyMaterial" });
     }
 
-    const systemPrompt =
-      "You are an expert teacher and academic explainer. You produce deeply structured, comprehensive, and clear explanations. Always respond in valid JSON only — no markdown outside the JSON, no code fences.";
-
-    // BUG 4 — validate material is readable before asking GROQ to analyze it
     const materialValidationPrefix = `If the study material below appears to be corrupted, empty, or contains only special characters with no meaningful words, respond with this exact JSON:
 { "error": "material_unreadable", "message": "The uploaded file could not be read properly." }
 
@@ -357,23 +241,19 @@ Study material:
 ${studyMaterial}
 ---`;
 
-    let userPrompt: string;
+    let prompt: string;
 
     if (concept?.trim()) {
-      userPrompt = `${materialValidationPrefix}
+      prompt = `You are an expert teacher and academic explainer. You produce deeply structured, comprehensive, and clear explanations. Always respond in valid JSON only — no markdown outside the JSON, no code fences.
+
+${materialValidationPrefix}
 
 Explain "${concept}" in full depth using the study material above as your primary source.
 Return a JSON object with this exact structure:
 {
   "title": "${concept}",
   "summary": "2-3 sentence overview focused on ${concept} as covered in this material",
-  "sections": [
-    {
-      "heading": "Section heading",
-      "type": "text | bullets | table | keyvalue",
-      "content": "..."
-    }
-  ],
+  "sections": [{ "heading": "Section heading", "type": "text | bullets | table | keyvalue", "content": "..." }],
   "key_terms": [{ "term": "...", "definition": "..." }],
   "key_takeaways": ["...", "...", "..."],
   "common_misconceptions": ["...", "..."],
@@ -388,19 +268,15 @@ For sections use a mix of types:
 
 Be exhaustive. Cover every concept, definition, formula, and example in the material. Minimum 4 sections.`;
     } else {
-      userPrompt = `${materialValidationPrefix}
+      prompt = `You are an expert teacher and academic explainer. You produce deeply structured, comprehensive, and clear explanations. Always respond in valid JSON only — no markdown outside the JSON, no code fences.
+
+${materialValidationPrefix}
 
 Analyze the study material above completely and return a JSON object with this exact structure:
 {
   "title": "Topic name inferred from the material",
   "summary": "2-3 sentence overview of what this material covers",
-  "sections": [
-    {
-      "heading": "Section heading",
-      "type": "text | bullets | table | keyvalue",
-      "content": "..."
-    }
-  ],
+  "sections": [{ "heading": "Section heading", "type": "text | bullets | table | keyvalue", "content": "..." }],
   "key_terms": [{ "term": "...", "definition": "..." }],
   "key_takeaways": ["...", "...", "..."],
   "common_misconceptions": ["...", "..."],
@@ -416,43 +292,35 @@ For sections use a mix of types:
 Be exhaustive. Cover every concept, definition, formula, and example present in the material. Minimum 4 sections.`;
     }
 
-    const response = await callGroqWithRetry({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.7,
-      max_tokens: 2000,
+    const response = await callGeminiWithRetry({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 2000 },
     });
 
-    if (response.status === 429) {
-      return res.status(429).json({ error: "Rate limited, please wait a moment." });
-    }
+    if (!response) throw new Error("No response from Gemini");
     if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
-      return res.status(response.status).json({ error: `GROQ API returned status ${response.status}` });
+      const errData = await response.json().catch(() => ({}));
+      console.error(`Gemini API error: ${response.status}`, errData);
+      return res.status(response.status).json({ error: `Gemini API error ${response.status}` });
     }
 
-    const data = await response.json() as any;
-    const rawText = data?.choices?.[0]?.message?.content ?? "";
+    const data = await response.json();
+    const raw = extractGeminiText(data);
+    if (!raw) throw new Error("Empty response from Gemini");
 
     let parsed;
     try {
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
+      const cleaned = raw.replace(/```json|```/g, "").trim();
       parsed = JSON.parse(cleaned);
     } catch {
-      console.error("explain-material JSON parse failed:", rawText);
+      console.error("explain-material JSON parse failed:", raw);
       return res.status(500).json({ error: "JSON parse failed" });
     }
 
     return res.json(parsed);
   } catch (error) {
     console.error("explain-material error:", error);
-    return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
-    });
+    return res.status(500).json({ error: error instanceof Error ? error.message : "Unknown error" });
   }
 });
 

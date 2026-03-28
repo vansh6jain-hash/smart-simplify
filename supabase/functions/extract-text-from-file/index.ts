@@ -6,25 +6,23 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
 
-async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
+async function callGeminiWithRetry(url: string, body: object, retries = 3) {
   for (let i = 0; i < retries; i++) {
-    const res = await fetch(GROQ_URL, {
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("GROQ_API_KEY")}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (res.status === 429 && i < retries - 1) {
-      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+    if (res.status === 429 || res.status === 503) {
+      const wait = Math.pow(2, i) * 2000;
+      await new Promise((r) => setTimeout(r, wait));
       continue;
     }
     return res;
   }
-  throw new Error("All retries exhausted");
+  throw new Error("Gemini rate limited after retries. Please wait a moment and try again.");
 }
 
 serve(async (req) => {
@@ -42,81 +40,51 @@ serve(async (req) => {
       });
     }
 
-    let extractedText = "";
-
-    if (fileMimeType === "application/pdf") {
-      // For PDFs: decode base64, use a text-based GROQ call to summarize
-      // Since we can't use pdfjs-dist in Deno easily, we'll decode and extract what we can
-      // We'll send the raw text extraction request to GROQ
-      const binaryStr = atob(fileBase64);
-      // Simple PDF text extraction: find text between parentheses in PDF stream
-      const textChunks: string[] = [];
-      const regex = /\(([^)]+)\)/g;
-      let match;
-      while ((match = regex.exec(binaryStr)) !== null) {
-        const chunk = match[1];
-        if (chunk.length > 1 && /[a-zA-Z]/.test(chunk)) {
-          textChunks.push(chunk);
-        }
-      }
-      const rawPdfText = textChunks.join(" ").substring(0, 8000);
-
-      if (rawPdfText.trim().length < 20) {
-        // Fallback: tell user we couldn't extract much
-        extractedText = "PDF text extraction yielded minimal content. The quiz will rely on the concept name.";
-      } else {
-        const response = await callGroqWithRetry({
-          model: "llama-3.3-70b-versatile",
-          messages: [
-            { role: "system", content: "You extract and summarize key concepts from text." },
-            { role: "user", content: `Extract all key concepts, definitions, and important points from this text. Return as organized plain text:\n\n${rawPdfText}` },
-          ],
-          temperature: 0.3,
-          max_tokens: 1500,
-        });
-
-        if (!response.ok) {
-          throw new Error(`GROQ API returned ${response.status}`);
-        }
-
-        const data = await response.json();
-        extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
-      }
-    } else {
-      // For images: use vision model
-      const response = await callGroqWithRetry({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
-        messages: [
+    // Gemini 2.0 Flash handles PDF, PNG, JPG, WEBP natively via inline_data
+    const apiUrl = `${GEMINI_URL}?key=${Deno.env.get("GEMINI_API_KEY")}`;
+    const response = await callGeminiWithRetry(apiUrl, {
+      contents: [{
+        parts: [
           {
-            role: "user",
-            content: [
-              { type: "image_url", image_url: { url: `data:${fileMimeType};base64,${fileBase64}` } },
-              { type: "text", text: "Extract all text, key concepts, definitions, and important points from this image. Return as plain text." },
-            ],
+            inline_data: {
+              mime_type: fileMimeType,
+              data: fileBase64,
+            },
+          },
+          {
+            text: "Extract ALL text, headings, definitions, formulas, bullet points, and key concepts from this document. Preserve the structure and order. Return as clean plain text only.",
           },
         ],
-        temperature: 0.3,
-        max_tokens: 1500,
+      }],
+      generationConfig: {
+        temperature: 0.1,
+        maxOutputTokens: 4000,
+      },
+    });
+
+    if (!response) throw new Error("No response from Gemini");
+
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      console.error(`Gemini file error: ${response.status}`, errData);
+      throw new Error(`Gemini file error ${response.status}: ${JSON.stringify(errData)}`);
+    }
+
+    const data = await response.json();
+    const extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+
+    if (!extractedText || extractedText.replace(/\s/g, "").length < 50) {
+      return new Response(JSON.stringify({
+        error: "unreadable",
+        message: "Could not extract text from this file. Try uploading a clearer image (PNG or JPG) of your notes.",
+      }), {
+        status: 200,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
-
-      if (response.status === 429) {
-        return new Response(JSON.stringify({ error: "Rate limited, please wait a moment." }), {
-          status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
-      }
-
-      if (!response.ok) {
-        const errBody = await response.text();
-        console.error(`GROQ vision error: ${response.status} - ${errBody}`);
-        throw new Error(`GROQ API returned ${response.status}`);
-      }
-
-      const data = await response.json();
-      extractedText = data?.choices?.[0]?.message?.content?.trim() ?? "";
     }
 
     return new Response(JSON.stringify({ extractedText }), {
+      status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {

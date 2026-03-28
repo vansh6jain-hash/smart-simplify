@@ -6,7 +6,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`;
 
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
@@ -14,23 +14,21 @@ function getLevelDescription(level: number): string {
   return "an expert, use full technical terminology";
 }
 
-async function callGroqWithRetry(body: unknown, retries = 3): Promise<Response> {
+async function callGeminiWithRetry(url: string, body: object, retries = 3) {
   for (let i = 0; i < retries; i++) {
-    const res = await fetch(GROQ_URL, {
+    const res = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("GROQ_API_KEY")}`,
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    if (res.status === 429 && i < retries - 1) {
-      await new Promise((r) => setTimeout(r, 2000 * Math.pow(2, i)));
+    if (res.status === 429 || res.status === 503) {
+      const wait = Math.pow(2, i) * 2000;
+      await new Promise((r) => setTimeout(r, wait));
       continue;
     }
     return res;
   }
-  throw new Error("All retries exhausted");
+  throw new Error("Gemini rate limited after retries. Please wait a moment and try again.");
 }
 
 serve(async (req) => {
@@ -51,57 +49,34 @@ serve(async (req) => {
     const levelDescription = getLevelDescription(level);
     const materialText = studyMaterial?.trim() ? studyMaterial : "No material uploaded.";
 
-<<<<<<< HEAD
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${Deno.env.get("API_KEY")}`,
-      },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
-        max_tokens: 500,
-      }),
-=======
-    const systemPrompt = "You are an expert teacher. Be concise and engaging.";
-    const userPrompt = `The user has studied the following material:\n---\n${materialText}\n---\nExplain "${concept}" to ${levelDescription} in 3–5 sentences. If study material is provided, base your explanation primarily on it — use the same examples, terms, and structure from the material. Add one analogy. Return plain text only, no formatting.`;
+    const prompt = `You are an expert teacher. Be concise and engaging.
 
-    const response = await callGroqWithRetry({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      temperature: 0.7,
-      max_tokens: 500,
->>>>>>> 2bb74c7b8522409c2f3710f6a6fc8992f5b08955
+The user has studied the following material:
+---
+${materialText}
+---
+Explain "${concept}" to ${levelDescription} in 3–5 sentences. If study material is provided, base your explanation primarily on it — use the same examples, terms, and structure from the material. Add one analogy. Return plain text only, no formatting.`;
+
+    const apiUrl = `${GEMINI_URL}?key=${Deno.env.get("GEMINI_API_KEY")}`;
+    const response = await callGeminiWithRetry(apiUrl, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.7, maxOutputTokens: 2000 },
     });
 
-    if (response.status === 429) {
-      return new Response(JSON.stringify({ error: "Rate limited, please wait a moment." }), {
-        status: 429,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    if (!response) throw new Error("No response from Gemini");
 
     if (!response.ok) {
-      const errorBody = await response.text();
-<<<<<<< HEAD
-      console.error(`Groq API error: ${response.status} - ${errorBody}`);
-      return new Response(JSON.stringify({ error: `Groq API returned status ${response.status}`, details: errorBody }), {
-=======
-      console.error(`GROQ API error: ${response.status} - ${errorBody}`);
-      return new Response(JSON.stringify({ error: `GROQ API returned status ${response.status}`, details: errorBody }), {
->>>>>>> 2bb74c7b8522409c2f3710f6a6fc8992f5b08955
+      const errData = await response.json().catch(() => ({}));
+      console.error(`Gemini API error: ${response.status}`, errData);
+      return new Response(JSON.stringify({ error: `Gemini API error ${response.status}` }), {
         status: response.status,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
     }
 
     const data = await response.json();
-    const explanation = data?.choices?.[0]?.message?.content?.trim() ?? "";
+    const explanation = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+    if (!explanation) throw new Error("Empty response from Gemini");
 
     return new Response(JSON.stringify({ explanation }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
