@@ -49,6 +49,7 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
   const [question, setQuestion] = useState<Question | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
   const [retrying, setRetrying] = useState(false);
 
   const lastFetchRef = useRef<{ lvl: number; history: string[] }>({ lvl: 5, history: [] });
@@ -56,6 +57,7 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
   const fetchQuestion = async (lvl: number, history: string[]) => {
     setLoading(true);
     setError(false);
+    setErrorMessage("");
     setRetrying(false);
     lastFetchRef.current = { lvl, history };
 
@@ -75,10 +77,11 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
 
       setQuestion(data as Question);
       setQuestionHistory((prev) => [...prev, (data as Question).question]);
-    } catch (e) {
+    } catch (e: any) {
       console.error(e);
       setQuestion(null);
       setError(true);
+      setErrorMessage(e?.message || "Something went wrong. Tap Retry to try again.");
     } finally {
       setLoading(false);
     }
@@ -182,9 +185,9 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
             ) : error ? (
               <div className="flex flex-col items-center justify-center py-12 gap-4">
                 <p className="text-sm text-muted-foreground text-center">
-                  {retrying
+                {retrying
                     ? "AI is busy, retrying…"
-                    : "Oops — the AI is a bit busy right now. Wait a few seconds, then retry this question."}
+                    : errorMessage || "Something went wrong. Tap Retry to try again."}
                 </p>
                 {!retrying && (
                   <Button variant="outline" onClick={handleRetry} className="gap-2">

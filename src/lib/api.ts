@@ -1,18 +1,18 @@
-async function apiFetch(path: string, body: unknown) {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    throw Object.assign(new Error(data?.error ?? `HTTP ${res.status}`), { status: res.status });
+import { supabase } from "@/integrations/supabase/client";
+
+async function invokeFunction(name: string, body: unknown) {
+  const { data, error } = await supabase.functions.invoke(name, { body });
+  if (error) {
+    throw new Error(error.message || `Edge function "${name}" failed`);
+  }
+  if (data?.error) {
+    throw new Error(data.error);
   }
   return data;
 }
 
 export async function extractTextFromFile(fileBase64: string, fileMimeType: string) {
-  return apiFetch("/api/extract-text-from-file", { fileBase64, fileMimeType });
+  return invokeFunction("extract-text-from-file", { fileBase64, fileMimeType });
 }
 
 export async function generateQuestion(
@@ -21,7 +21,7 @@ export async function generateQuestion(
   questionHistory: string[],
   studyMaterial: string
 ) {
-  return apiFetch("/api/generate-question", { concept, level, questionHistory, studyMaterial });
+  return invokeFunction("generate-question", { concept, level, questionHistory, studyMaterial });
 }
 
 export async function generateExplanation(
@@ -29,9 +29,9 @@ export async function generateExplanation(
   level: number,
   studyMaterial: string
 ) {
-  return apiFetch("/api/generate-explanation", { concept, level, studyMaterial });
+  return invokeFunction("generate-explanation", { concept, level, studyMaterial });
 }
 
 export async function explainMaterial(studyMaterial: string, concept: string) {
-  return apiFetch("/api/explain-material", { studyMaterial, concept });
+  return invokeFunction("explain-material", { studyMaterial, concept });
 }
