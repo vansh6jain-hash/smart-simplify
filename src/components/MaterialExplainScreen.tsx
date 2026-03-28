@@ -29,7 +29,7 @@ const MaterialExplainScreen = ({
     try {
       const result = await explainMaterial(studyMaterial, concept);
 
-      // BUG 4 — check for material_unreadable signal from GROQ
+      // Check for material_unreadable signal from Gemini
       if (result?.error === "material_unreadable") {
         setErrorMessage(
           "Your file could not be analyzed. Please try uploading a PNG or JPG image of your notes instead."
