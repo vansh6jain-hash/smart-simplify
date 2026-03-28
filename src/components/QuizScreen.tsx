@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, XCircle, ArrowRight, Loader2, FileText } from "lucide-react";
@@ -106,9 +106,10 @@ const QuizScreen = ({ concept, studyMaterial, onFinish }: QuizScreenProps) => {
   const [correctCount, setCorrectCount] = useState(0);
 
   // Initialize quiz on mount
-  useState(() => {
+  useEffect(() => {
     handleStart();
-  });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleStart = async () => {
     setScreen("loading");
