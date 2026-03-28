@@ -17,7 +17,9 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${process.env.GEMINI_API_KEY}`;
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const TEXT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
+const VISION_MODEL = "meta-llama/llama-4-maverick:free";
 
 function getLevelDescription(level: number): string {
   if (level <= 3) return "a child aged 7–10, use simple everyday words, no jargon";
@@ -29,35 +31,63 @@ function isMeaningfulText(text: string): boolean {
   return text.replace(/\s/g, "").length > 100 && /[a-zA-Z]{3,}/.test(text);
 }
 
-async function callGeminiWithRetry(
-  body: object,
-  retries = 2
-): Promise<Response> {
+async function callWithRetry(body: object, retries = 2): Promise<Response> {
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  
   for (let i = 0; i <= retries; i++) {
-    const res = await fetch(GEMINI_URL, {
+    const res = await fetch(OPENROUTER_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "HTTP-Referer": "https://knowfirst.ai",
+        "X-Title": "KnowFirst AI"
+      },
+      body: JSON.stringify(body)
     });
     if (res.status === 429) {
-      if (i === retries) throw new Error("Rate limited after retries. Please wait 1 minute.");
-      const wait = 15000 * (i + 1);
-      console.log(`429 rate limited. Waiting ${wait}ms...`);
-      await new Promise(r => setTimeout(r, wait));
+      if (i === retries) throw new Error("Rate limited. Please wait a moment and try again.");
+      await new Promise(r => setTimeout(r, 5000 * (i + 1)));
       continue;
     }
-    if (res.status === 503) {
-      if (i === retries) throw new Error("Gemini unavailable.");
-      await new Promise(r => setTimeout(r, 8000));
+    if (res.status === 503 || res.status === 502) {
+      if (i === retries) throw new Error("Service unavailable. Try again shortly.");
+      await new Promise(r => setTimeout(r, 3000));
       continue;
+    }
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`OpenRouter error ${res.status}: ${errText}`);
     }
     return res;
   }
   throw new Error("All retries failed.");
 }
 
+function extractTextFromResponse(data: any): string {
+  const text = data?.choices?.[0]?.message?.content ?? "";
+  if (!text) throw new Error("Empty response from OpenRouter");
+  return text;
+}
+
+function parseJsonResponse(text: string): any {
+  const cleaned = text.replace(/```json|```/g, "").trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch (e) {
+    throw new Error("JSON parse failed: " + text.slice(0, 300));
+  }
+}
+
 // POST /api/extract-text-from-file
 app.post("/api/extract-text-from-file", async (req, res) => {
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  if (!OPENROUTER_API_KEY) {
+    return res.status(500).json({
+      error: "OPENROUTER_API_KEY is not set. Add it to your .env file."
+    });
+  }
+
   try {
     const { fileBase64, fileMimeType } = req.body;
     if (!fileBase64 || !fileMimeType) {
@@ -79,133 +109,104 @@ app.post("/api/extract-text-from-file", async (req, res) => {
       }
 
       // STEP 2 — Validate meaningfulness
-      if (isMeaningfulText(fullText)) {
-        // Good extraction — summarise with Gemini
+      const isMeaningful = fullText.replace(/\s/g, "").length > 100
+        && (fullText.match(/[a-zA-Z]{3,}/g) || []).length > 20;
+
+      if (isMeaningful) {
+        // Good extraction — clean with OpenRouter
         const truncated = fullText.substring(0, 8000);
-        const response = await callGeminiWithRetry({
-          contents: [
+        const response = await callWithRetry({
+          model: TEXT_MODEL,
+          messages: [
             {
-              parts: [
-                {
-                  text: `You extract and summarize key concepts from text. Extract all key concepts, definitions, and important points from this text. Return as organized plain text:\n\n${truncated}`,
-                },
-              ],
+              role: "system",
+              content: "You are a text cleaner. Return only clean readable text, no commentary."
             },
+            {
+              role: "user",
+              content: `Clean this raw PDF text and return all meaningful content as plain text:\n\n${truncated}`
+            }
           ],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 1500,
-          },
+          temperature: 0.3,
+          max_tokens: 1500
         });
-        if (!response.ok) throw new Error(`Gemini API returned ${response.status}`);
-        const data = (await response.json()) as any;
-        extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+        const data = await response.json();
+        extractedText = extractTextFromResponse(data);
       } else {
-        // STEP 3 — Fall back to Gemini vision on the raw PDF
-        console.log("pdf-parse text not meaningful, falling back to Gemini vision");
-        const visionResponse = await callGeminiWithRetry({
-          contents: [
-            {
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: fileMimeType,
-                    data: fileBase64,
-                  },
-                },
-                {
-                  text: "This is a page from a study document. Extract ALL text, headings, definitions, formulas, and key concepts visible. Return as clean plain text preserving structure.",
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.3,
-            maxOutputTokens: 1500,
-          },
+        // STEP 3 — PDF not meaningful
+        return res.status(422).json({
+          error: "unreadable",
+          message: "Could not extract text from this PDF. Please upload a PNG or JPG photo of your notes instead."
         });
-
-        if (visionResponse.status === 429) {
-          return res.status(429).json({ error: "Rate limited, please wait a moment." });
-        }
-
-        if (visionResponse.ok) {
-          const visionData = (await visionResponse.json()) as any;
-          const visionText = visionData?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
-          if (isMeaningfulText(visionText)) {
-            extractedText = visionText;
-          } else {
-            // STEP 4 — Still not meaningful
-            return res.status(422).json({
-              error:
-                "Could not extract text from this PDF. Please try uploading a clearer file or a PNG/JPG image of your notes.",
-            });
-          }
-        } else {
-          return res.status(422).json({
-            error:
-              "Could not extract text from this PDF. Please try uploading a clearer file or a PNG/JPG image of your notes.",
-          });
-        }
       }
     } else {
-      // Images — use Gemini vision directly
-      const response = await callGeminiWithRetry({
-        contents: [
+      // Images — use vision model
+      const response = await callWithRetry({
+        model: VISION_MODEL,
+        messages: [
           {
-            parts: [
+            role: "user",
+            content: [
               {
-                inlineData: {
-                  mimeType: fileMimeType,
-                  data: fileBase64,
-                },
+                type: "image_url",
+                image_url: {
+                  url: `data:${fileMimeType};base64,${fileBase64}`
+                }
               },
               {
-                text: "Extract all text, key concepts, definitions, and important points from this image. Return as plain text.",
-              },
-            ],
-          },
+                type: "text",
+                text: "Extract ALL text, headings, definitions, formulas, bullet points, and key concepts from this image. Preserve structure. Return as clean plain text only."
+              }
+            ]
+          }
         ],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 1500,
-        },
+        temperature: 0.3,
+        max_tokens: 1500
       });
 
-      if (response.status === 429) {
-        return res.status(429).json({ error: "Rate limited, please wait a moment." });
-      }
-      if (!response.ok) {
-        const errBody = await response.text();
-        console.error(`Gemini vision error: ${response.status} - ${errBody}`);
-        throw new Error(`Gemini API returned ${response.status}`);
-      }
+      const data = await response.json();
+      extractedText = extractTextFromResponse(data);
+    }
 
-      const data = (await response.json()) as any;
-      extractedText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+    // STEP 5 — Validate final output
+    const finalCheck = extractedText.replace(/\s/g, "").length > 50 && /[a-zA-Z]{3,}/.test(extractedText);
+    if (!finalCheck) {
+      return res.status(422).json({
+        error: "unreadable",
+        message: "Could not read file clearly."
+      });
     }
 
     return res.json({ extractedText });
-  } catch (error) {
+  } catch (error: any) {
     console.error("extract-text-from-file error:", error);
     return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: error.message || "Unknown error",
+      details: String(error)
     });
   }
 });
 
 // OPTIONS handler for CORS preflight
-app.options('/api/generate-question', (req, res) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+app.options("/api/generate-question", (req, res) => {
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
   res.sendStatus(200);
 });
 
 // POST /api/generate-question — batch generates 15 questions (5 per difficulty tier)
 app.post("/api/generate-question", async (req, res) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  res.header("Access-Control-Allow-Origin", "*");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  if (!OPENROUTER_API_KEY) {
+    return res.status(500).json({
+      error: "OPENROUTER_API_KEY is not set. Add it to your .env file."
+    });
+  }
+
   try {
     const { concept, studyMaterial, startLevel } = req.body;
     if (!concept) {
@@ -223,7 +224,7 @@ app.post("/api/generate-question", async (req, res) => {
       ? `Base ALL questions on this study material as the primary source:\n---\n${studyMaterial}\n---`
       : "";
 
-    const prompt = `Generate exactly 15 unique MCQ questions about "${concept}".
+    const userPrompt = `Generate exactly 15 unique MCQ questions about "${concept}".
 ${materialBlock}
 
 Create exactly 3 groups of exactly 5 questions each:
@@ -263,38 +264,25 @@ Return ONLY this exact JSON structure, no markdown, no code fences, no extra tex
   "expert": [ ...exactly 5 items... ]
 }`;
 
-    const response = await callGeminiWithRetry({
-      contents: [
+    const response = await callWithRetry({
+      model: TEXT_MODEL,
+      messages: [
         {
-          parts: [{ text: prompt }],
+          role: "system",
+          content: "You generate MCQ quiz questions. Respond ONLY with valid JSON, no markdown fences, no extra text."
         },
+        {
+          role: "user",
+          content: userPrompt
+        }
       ],
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 3000,
-      },
+      temperature: 0.7,
+      max_tokens: 3000
     });
 
-    if (response.status === 429) {
-      return res.status(429).json({ error: "Rate limited, please wait a moment." });
-    }
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`Gemini API error: ${response.status} - ${errorBody}`);
-      return res.status(response.status).json({ error: `Gemini API returned status ${response.status}` });
-    }
-
-    const data = (await response.json()) as any;
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    const cleaned = raw.replace(/```json|```/g, "").trim();
-
-    let parsed;
-    try {
-      parsed = JSON.parse(cleaned);
-    } catch (e) {
-      console.error("JSON parse failed:", raw.slice(0, 500));
-      return res.status(500).json({ error: "JSON parse failed: " + raw.slice(0, 500) });
-    }
+    const data = await response.json();
+    const raw = extractTextFromResponse(data);
+    const parsed = parseJsonResponse(raw);
 
     // Validate the response has all 3 groups with at least 3 items each
     if (
@@ -305,20 +293,28 @@ Return ONLY this exact JSON structure, no markdown, no code fences, no extra tex
       parsed.beginner.length < 3 ||
       parsed.expert.length < 3
     ) {
-      return res.status(500).json({ error: "Invalid question bank structure from Gemini" });
+      return res.status(500).json({ error: "Invalid question bank structure from OpenRouter" });
     }
 
     return res.json({ questionBank: parsed });
-  } catch (error) {
+  } catch (error: any) {
     console.error("generate-question error:", error);
     return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: error.message || "Unknown error",
+      details: String(error)
     });
   }
 });
 
 // POST /api/generate-explanation — returns structured JSON
 app.post("/api/generate-explanation", async (req, res) => {
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  if (!OPENROUTER_API_KEY) {
+    return res.status(500).json({
+      error: "OPENROUTER_API_KEY is not set. Add it to your .env file."
+    });
+  }
+
   try {
     const { concept, level, studyMaterial } = req.body;
     if (!concept || typeof level !== "number") {
@@ -336,7 +332,7 @@ app.post("/api/generate-explanation", async (req, res) => {
       ? `Use this study material as your primary source:\n---\n${studyMaterial}\n---\n`
       : "";
 
-    const prompt = `You are an expert teacher. Explain "${concept}" to ${levelDescription}.
+    const userPrompt = `You are an expert teacher. Explain "${concept}" to ${levelDescription}.
 ${materialSection}
 Return this exact JSON structure:
 {
@@ -368,57 +364,52 @@ Depth and language must match ${levelLabel} level:
 
 Minimum 3 sections. Be thorough. Return only valid JSON, no markdown fences.`;
 
-    const response = await callGeminiWithRetry({
-      contents: [
+    const response = await callWithRetry({
+      model: TEXT_MODEL,
+      messages: [
         {
-          parts: [{ text: prompt }],
+          role: "system",
+          content: "You are an expert teacher. Always respond in valid JSON only, no markdown outside JSON, no code fences."
         },
+        {
+          role: "user",
+          content: userPrompt
+        }
       ],
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 2000,
-      },
+      temperature: 0.7,
+      max_tokens: 2000
     });
 
-    if (response.status === 429) {
-      return res.status(429).json({ error: "Rate limited, please wait a moment." });
-    }
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`Gemini API error: ${response.status} - ${errorBody}`);
-      return res.status(response.status).json({ error: `Gemini API returned status ${response.status}`, details: errorBody });
-    }
-
-    const data = (await response.json()) as any;
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-    let parsed;
-    try {
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
-      parsed = JSON.parse(cleaned);
-    } catch {
-      console.error("generate-explanation JSON parse failed:", rawText);
-      return res.status(500).json({ error: "JSON parse failed" });
-    }
+    const data = await response.json();
+    const raw = extractTextFromResponse(data);
+    const parsed = parseJsonResponse(raw);
 
     return res.json(parsed);
-  } catch (error) {
+  } catch (error: any) {
     console.error("generate-explanation error:", error);
     return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: error.message || "Unknown error",
+      details: String(error)
     });
   }
 });
 
 // POST /api/explain-material — deep structured explanation of uploaded material
 app.post("/api/explain-material", async (req, res) => {
+  const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
+  if (!OPENROUTER_API_KEY) {
+    return res.status(500).json({
+      error: "OPENROUTER_API_KEY is not set. Add it to your .env file."
+    });
+  }
+
   try {
     const { studyMaterial, concept } = req.body;
     if (!studyMaterial?.trim()) {
       return res.status(400).json({ error: "Missing studyMaterial" });
     }
 
-    // BUG 4 — validate material is readable before asking Gemini to analyze it
+    // Validate material is readable before asking to analyze it
     const materialValidationPrefix = `If the study material below appears to be corrupted, empty, or contains only special characters with no meaningful words, respond with this exact JSON:
 { "error": "material_unreadable", "message": "The uploaded file could not be read properly." }
 
@@ -487,44 +478,32 @@ For sections use a mix of types:
 Be exhaustive. Cover every concept, definition, formula, and example present in the material. Minimum 4 sections. Return only valid JSON, no markdown fences.`;
     }
 
-    const response = await callGeminiWithRetry({
-      contents: [
+    const response = await callWithRetry({
+      model: TEXT_MODEL,
+      messages: [
         {
-          parts: [{ text: userPrompt }],
+          role: "system",
+          content: "You are an expert teacher and academic explainer. Always respond in valid JSON only, no markdown outside JSON, no code fences."
         },
+        {
+          role: "user",
+          content: userPrompt
+        }
       ],
-      generationConfig: {
-        temperature: 0.7,
-        maxOutputTokens: 2000,
-      },
+      temperature: 0.7,
+      max_tokens: 2000
     });
 
-    if (response.status === 429) {
-      return res.status(429).json({ error: "Rate limited, please wait a moment." });
-    }
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`Gemini API error: ${response.status} - ${errorBody}`);
-      return res.status(response.status).json({ error: `Gemini API returned status ${response.status}` });
-    }
-
-    const data = (await response.json()) as any;
-    const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-
-    let parsed;
-    try {
-      const cleaned = rawText.replace(/```json|```/g, "").trim();
-      parsed = JSON.parse(cleaned);
-    } catch {
-      console.error("explain-material JSON parse failed:", rawText);
-      return res.status(500).json({ error: "JSON parse failed" });
-    }
+    const data = await response.json();
+    const raw = extractTextFromResponse(data);
+    const parsed = parseJsonResponse(raw);
 
     return res.json(parsed);
-  } catch (error) {
+  } catch (error: any) {
     console.error("explain-material error:", error);
     return res.status(500).json({
-      error: error instanceof Error ? error.message : "Unknown error",
+      error: error.message || "Unknown error",
+      details: String(error)
     });
   }
 });

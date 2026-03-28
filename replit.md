@@ -1,6 +1,6 @@
 # KnowFirst AI
 
-An adaptive AI-powered quiz app that assesses your knowledge level on any topic using multiple-choice questions and provides rich structured explanations powered by Google Gemini 2.5 Flash.
+An adaptive AI-powered quiz app that assesses your knowledge level on any topic using multiple-choice questions and provides rich structured explanations powered by OpenRouter (LLaMA 3.3 70B).
 
 ## Architecture
 
@@ -16,17 +16,17 @@ An adaptive AI-powered quiz app that assesses your knowledge level on any topic 
 
 | Case | Concept | File | Action |
 |------|---------|------|--------|
-| 1 | ✅ | ❌ | 5 MCQs → level detection → structured explanation |
-| 2 | ✅ | ✅ | 5 MCQs grounded in material → structured explanation |
-| 3 | ❌ | ✅ | Skip quiz → full material breakdown (MaterialExplainScreen) |
-| 4 | ❌ | ❌ | Inline validation error — cannot proceed |
+| 1 | Yes | No | 5 MCQs -> level detection -> structured explanation |
+| 2 | Yes | Yes | 5 MCQs grounded in material -> structured explanation |
+| 3 | No | Yes | Skip quiz -> full material breakdown (MaterialExplainScreen) |
+| 4 | No | No | Inline validation error — cannot proceed |
 
 ## Key Files
 
 ### Server
 - `server/index.ts` — Express API with 4 endpoints:
-  - `POST /api/extract-text-from-file` — Extracts text from PDF/image using Gemini vision
-  - `POST /api/generate-question` — Batch generates 15 MCQ questions (5 per difficulty tier) via Gemini
+  - `POST /api/extract-text-from-file` — Extracts text from PDF/image using OpenRouter vision (LLaMA 4 Maverick)
+  - `POST /api/generate-question` — Batch generates 15 MCQ questions (5 per difficulty tier) via OpenRouter
   - `POST /api/generate-explanation` — Returns **structured JSON** explanation at the user's level (2000 tokens)
   - `POST /api/explain-material` — Deep structured breakdown of uploaded material (2000 tokens)
 
@@ -56,7 +56,7 @@ An adaptive AI-powered quiz app that assesses your knowledge level on any topic 
 
 ## Environment Variables / Secrets
 
-- `GEMINI_API_KEY` — Required. Google Gemini API key. Kept server-side only.
+- `OPENROUTER_API_KEY` — Required. OpenRouter API key. Kept server-side only.
 
 ## Dev
 
@@ -68,6 +68,7 @@ Starts Express (port 3000) and Vite (port 5000) concurrently.
 
 ## Notes
 
-- Migrated from Lovable (Supabase Edge Functions → Express routes)
+- Migrated from Lovable (Supabase Edge Functions -> Express routes)
 - No database — all state is in-memory per session
 - Suggested questions on ExplanationRenderer pre-fill concept via sessionStorage + navigate to home
+- Uses OpenRouter API with free LLaMA models (meta-llama/llama-3.3-70b-instruct:free for text, meta-llama/llama-4-maverick:free for vision)

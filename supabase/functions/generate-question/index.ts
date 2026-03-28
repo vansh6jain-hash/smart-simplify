@@ -2,34 +2,40 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers":
-    "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
 };
 
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${Deno.env.get("GEMINI_API_KEY")}`;
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const TEXT_MODEL = "meta-llama/llama-3.3-70b-instruct:free";
 
-async function callGeminiWithRetry(
-  body: object,
-  retries = 2
-): Promise<Response> {
+async function callWithRetry(body: object, retries = 2): Promise<Response> {
+  const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
+
   for (let i = 0; i <= retries; i++) {
-    const res = await fetch(GEMINI_URL, {
+    const res = await fetch(OPENROUTER_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+        "HTTP-Referer": "https://knowfirst.ai",
+        "X-Title": "KnowFirst AI"
+      },
+      body: JSON.stringify(body)
     });
     if (res.status === 429) {
-      if (i === retries) throw new Error("Rate limited after retries. Please wait 1 minute.");
-      const wait = 15000 * (i + 1);
-      console.log(`429 rate limited. Waiting ${wait}ms...`);
-      await new Promise(r => setTimeout(r, wait));
+      if (i === retries) throw new Error("Rate limited. Please wait a moment and try again.");
+      await new Promise(r => setTimeout(r, 5000 * (i + 1)));
       continue;
     }
-    if (res.status === 503) {
-      if (i === retries) throw new Error("Gemini unavailable.");
-      await new Promise(r => setTimeout(r, 8000));
+    if (res.status === 503 || res.status === 502) {
+      if (i === retries) throw new Error("Service unavailable. Try again shortly.");
+      await new Promise(r => setTimeout(r, 3000));
       continue;
+    }
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`OpenRouter error ${res.status}: ${errText}`);
     }
     return res;
   }
@@ -48,6 +54,13 @@ serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
+  if (!OPENROUTER_API_KEY) {
+    return new Response(JSON.stringify({
+      error: "OPENROUTER_API_KEY secret is missing. Add it to Supabase Edge Function secrets."
+    }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
   try {
     const { concept, studyMaterial, startLevel } = await req.json();
 
@@ -62,7 +75,7 @@ serve(async (req) => {
       ? `Base ALL questions on this study material as the primary source:\n---\n${studyMaterial}\n---`
       : "";
 
-    const prompt = `Generate exactly 15 unique MCQ questions about "${concept}".
+    const userPrompt = `Generate exactly 15 unique MCQ questions about "${concept}".
 ${materialBlock}
 
 Create exactly 3 groups of exactly 5 questions each:
@@ -102,44 +115,33 @@ Return ONLY this exact JSON structure, no markdown, no code fences, no extra tex
   "expert": [ ...exactly 5 items... ]
 }`;
 
-    const response = await callGeminiWithRetry({
-      contents: [
+    const response = await callWithRetry({
+      model: TEXT_MODEL,
+      messages: [
         {
-          parts: [{ text: prompt }],
+          role: "system",
+          content: "You generate MCQ quiz questions. Respond ONLY with valid JSON, no markdown fences, no extra text."
         },
+        {
+          role: "user",
+          content: userPrompt
+        }
       ],
-      generationConfig: {
-        temperature: 0.8,
-        maxOutputTokens: 3000,
-      },
+      temperature: 0.7,
+      max_tokens: 3000
     });
 
-    if (response.status === 429) {
-      return new Response(JSON.stringify({ error: "Rate limited, please wait a moment." }), {
-        status: 429,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      console.error(`Gemini API error: ${response.status} - ${errorBody}`);
-      return new Response(JSON.stringify({ error: `Gemini API returned status ${response.status}`, details: errorBody }), {
-        status: response.status,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
     const data = await response.json();
-    const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-    const cleaned = raw.replace(/```json|```/g, "").trim();
+    const text = data?.choices?.[0]?.message?.content ?? "";
+    if (!text) throw new Error("Empty response from OpenRouter");
 
+    const cleaned = text.replace(/```json|```/g, "").trim();
     let parsed;
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
-      console.error("JSON parse failed:", raw.slice(0, 500));
-      return new Response(JSON.stringify({ error: "JSON parse failed: " + raw.slice(0, 500) }), {
+      console.error("JSON parse failed:", text.slice(0, 500));
+      return new Response(JSON.stringify({ error: "JSON parse failed: " + text.slice(0, 300) }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -154,7 +156,7 @@ Return ONLY this exact JSON structure, no markdown, no code fences, no extra tex
       parsed.beginner.length < 3 ||
       parsed.expert.length < 3
     ) {
-      return new Response(JSON.stringify({ error: "Invalid question bank structure from Gemini" }), {
+      return new Response(JSON.stringify({ error: "Invalid question bank structure from OpenRouter" }), {
         status: 500,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
       });
@@ -163,9 +165,9 @@ Return ONLY this exact JSON structure, no markdown, no code fences, no extra tex
     return new Response(JSON.stringify({ questionBank: parsed }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Edge function runtime error:", error);
-    return new Response(JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }), {
+    return new Response(JSON.stringify({ error: error.message || "Unknown error", details: String(error) }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
