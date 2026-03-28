@@ -228,7 +228,7 @@ const HomeScreen = ({ onStart, onExplainMaterial }: HomeScreenProps) => {
                 <p className="text-sm text-muted-foreground">
                   Drag & drop or <span className="text-primary font-medium">browse</span>
                 </p>
-                <p className="text-xs text-muted-foreground">PDF, PNG, JPG, WEBP · Max 10MB</p>
+                <p className="text-xs text-muted-foreground">PDF, PNG, JPG, WEBP · Max 15MB</p>
               </div>
               <input
                 ref={fileInputRef}
